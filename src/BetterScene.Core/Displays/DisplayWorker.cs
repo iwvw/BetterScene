@@ -260,6 +260,15 @@ public sealed class DisplayWorker
                 WmiBrightness.TryGet(out int level);
                 target.Brightness = level;
                 target.Maximum = 100;
+
+                // 旧版本在 HDR 下把所有屏都切到 gamma 调光，包括这块 WMI 内屏。
+                // 于是背光被 WMI 正常调、图像又被 gamma 压暗，亮度整体偏低。
+                // 现在这类屏改回纯背光控制，残留的软件调光曲线必须清掉。
+                if (GammaBrightness.IsSoftwareDimmed(target.GdiName))
+                {
+                    GammaBrightness.Restore(target.GdiName);
+                    Log.Info($"cleared leftover software dimming on {target.FirmwareId}");
+                }
             }
             else
             {

@@ -58,10 +58,19 @@
     <Manifest Include="$(ApplicationManifest)" />
   </ItemGroup>
 
+  <!--
+    worker 必须跟主程序用同一套运行时部署方式。
+
+    主程序默认 SelfContained=true（目录里带整套 CoreCLR）。
+    如果 worker 按框架依赖构建，它的 runtimeconfig 会只写
+    "framework: Microsoft.NETCore.App"，而目录里同时又放着自带的 hostfxr/coreclr，
+    结果 hostfxr 去全局找框架、只找到 x86 那一套，启动直接报
+    "No frameworks were found"，表现为显示器进程反复崩溃、面板空白。
+  -->
   <Target Name="BuildDisplaysWorker" BeforeTargets="Build">
     <MSBuild Projects="..\BetterScene.Displays\BetterScene.Displays.csproj"
              Targets="Restore;Build;GetTargetPath"
-             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier)">
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)">
       <Output TaskParameter="TargetOutputs" ItemName="DisplaysWorkerOutputs" />
     </MSBuild>
   </Target>

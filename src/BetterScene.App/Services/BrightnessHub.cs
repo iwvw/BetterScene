@@ -17,17 +17,21 @@ public static class BrightnessHub
     /// </summary>
     private static readonly BrightnessCoalescer Coalescer = new((id, level) =>
     {
-        // HDR 开启时改走 gamma 校正：
+        // HDR 开启时**外接屏**要改走 gamma 校正：
         //
-        // 实测 HDR 下显示器固件会锁死背光，DDC 0x10 写入返回成功但值不变
+        // 实测 HDR 下外接屏固件会锁死背光，DDC 0x10 写入返回成功但值不变
         // （readback 仍是原值）。而 SDR white level 在 CCD API 里只有 GET
         // （类型 11），没有对应的 SET，改不了。
         //
         // gamma ramp 是唯一还能动的通道：SetDeviceGammaRamp 在 HDR 下
         // 实测有效（写 0.7 后读回 45874 / 65535），用户能直观看到变暗。
+        //
+        // 例外是笔电内屏：它的背光走 WMI（WmiSetBrightness），
+        // 这条通道在 HDR 下依然生效（实测写 60 读回 60），
+        // 而且调的是真实背光——不能用 gamma 把它绕过去。
         DisplayTarget? target = Find(id);
 
-        if (target is not null && IsHdrActive(target))
+        if (target is not null && UsesGammaUnderHdr(target) && IsHdrActive(target))
         {
             if (GammaBrightness.TrySet(target.GdiName, level, out _))
             {
@@ -41,9 +45,19 @@ public static class BrightnessHub
         if (RawWriter is { } writer) writer(id, level);
     });
 
+    /// <summary>
+    /// HDR 下这台显示器该不该用 gamma 调光。
+    ///
+    /// 只有 DDC 背光和本来就是软件调光的屏需要：
+    /// DDC 在 HDR 下被固件锁死，必须用 gamma 兜底。
+    /// WMI 背光（笔电内屏）在 HDR 下照常生效，用 gamma 反而会
+    /// 变成"背光全开 + 软件压暗"，既费电又会被系统亮度同步覆盖。
+    /// </summary>
+    private static bool UsesGammaUnderHdr(DisplayTarget target) =>
+        target.Backend is DisplayBackend.Ddc or DisplayBackend.Gamma;
+
     /// <summary>该显示器当前是否处于 HDR 模式（结果缓存 2 秒，避免每次滑块都查一遍）。</summary>
-    private static bool IsHdrActive(DisplayTarget target)
-    {
+    private static bool IsHdrActive(DisplayTarget target)    {
         long now = MonoClock.NowMs;
 
         if (_hdrCacheId == target.Id && MonoClock.Within(_hdrCacheAt, 2000))
@@ -92,9 +106,12 @@ public static class BrightnessHub
 
     public static int LevelOf(DisplayTarget target)
     {
-        // HDR 模式下背光被锁定，记忆里的值对应的是 gamma 曲线，
+        // HDR 模式下外接屏的背光被锁定，记忆里的值对应的是 gamma 曲线，
         // 直接读系统当前 ramp 才不会和滑块显示脱节。
-        if (IsHdrActive(target) && ReadGammaCached(target) is { } hdrLevel)
+        //
+        // WMI 内屏不走这里：它调的是真背光，滑块值就是记忆值，
+        // 和没有 HDR 时完全一样（也避免在 UI 线程上查 WMI）。
+        if (IsHdrActive(target) && UsesGammaUnderHdr(target) && ReadGammaCached(target) is { } hdrLevel)
         {
             return Math.Clamp(hdrLevel, 0, 100);
         }

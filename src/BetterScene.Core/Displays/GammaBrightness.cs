@@ -99,6 +99,50 @@ public static class GammaBrightness
         _ = TrySet(gdiName, 100, out _);
     }
 
+    /// <summary>
+    /// 当前 ramp 是否是「本程序写进去的调光曲线」。
+    ///
+    /// 用途：笔电内屏的亮度改走 WMI 背光后，要把旧版本留下的软件调光清掉，
+    /// 否则背光恢复了、gamma 还压着，画面仍然是暗的。
+    ///
+    /// 判定方式是把当前 ramp 和「用默认 ramp 按识别出的档位重建的结果」比对，
+    /// 这样不会误伤显卡驱动或校色软件写入的真实色彩曲线——
+    /// 那些曲线的形状和我们的公式对不上。
+    /// </summary>
+    public static bool IsSoftwareDimmed(string gdiName)
+    {
+        IntPtr dc = OpenDisplay(gdiName);
+        if (dc == IntPtr.Zero) return false;
+
+        ushort[] ramp = new ushort[768];
+        try
+        {
+            if (!GetDeviceGammaRamp(dc, ramp)) return false;
+        }
+        finally
+        {
+            DeleteDC(dc);
+        }
+
+        ushort top = (ushort)Math.Max(ramp[255], Math.Max(ramp[511], ramp[767]));
+        if (top >= 65535 - 256) return false;
+
+        ushort[] identity = DefaultRamp();
+        int level = LevelFromRamp(ramp);
+
+        for (int delta = 0; delta <= 2; delta++)
+        {
+            foreach (int candidate in new[] { level + delta, level - delta })
+            {
+                int clamped = Math.Clamp(candidate, MinimumBrightness, 100);
+                if (clamped >= 100) continue;
+                if (Matches(BuildRamp(identity, clamped), ramp)) return true;
+            }
+        }
+
+        return false;
+    }
+
     public static int ReadLevel(string gdiName)
     {
         IntPtr dc = OpenDisplay(gdiName);

@@ -2,7 +2,14 @@ using System.Management;
 
 namespace BetterScene.Core.Displays;
 
-internal static class WmiBrightness
+/// <summary>
+/// 笔电内屏背光（root\WMI 的 WmiMonitorBrightness）。
+///
+/// 这条通道和 DDC 完全独立：内屏通常没有 DDC/CI，但一定有 WMI 背光。
+/// 关键特性是它在 HDR 开启时依然生效（调的是真实背光，不是图像映射），
+/// 所以 HDR 下不能把这类屏切到 gamma 调光。
+/// </summary>
+public static class WmiBrightness
 {
     private const string BrightnessClass = "WmiMonitorBrightness";
     private const string MethodsClass = "WmiMonitorBrightnessMethods";

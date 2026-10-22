@@ -495,10 +495,21 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         bool ok = HdrControl.SetEnabled(_target, enabled);
         if (!ok) return false;
 
-        // HDR 状态变了，亮度通道也跟着变（背光 ↔ SDR 白点），
+        // HDR 状态变了，亮度通道也跟着变（背光 ↔ gamma），
         // 两个缓存都要失效，否则滑块位置和实际亮度会对不上。
         BrightnessHub.InvalidateHdrCache();
         BrightnessHub.InvalidateSdrCache();
+
+        // WMI 背光屏（笔电内屏）不管 HDR 开关调的都是真背光。
+        // 但旧版本在 HDR 下给它叠过一层 gamma 压暗，管线重建后这层会残留，
+        // 表现为「背光是 100，画面却发暗」。这里清掉，并按记忆值重设一次背光。
+        if (_target.Backend == DisplayBackend.Wmi)
+        {
+            GammaBrightness.Restore(_target.GdiName);
+
+            int level = BrightnessHub.LevelOf(_target);
+            DisplayBus.SetBrightness(_target.Id, level);
+        }
 
         // 先乐观更新，避免开关弹回原位造成"没生效"的错觉。
         Hdr = Hdr with { IsEnabled = enabled };
