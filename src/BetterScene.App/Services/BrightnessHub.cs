@@ -28,7 +28,8 @@ public static class BrightnessHub
     public static IEnumerable<DisplayTarget> Controllable =>
         DisplayBus.Current.Where(t => t.Backend != DisplayBackend.None);
 
-    public static DisplayTarget? Find(string id) =>
+    /// <summary>按显示器 ID 查找；id 为空时返回 null（调用方常拿到可空 ID）。</summary>
+    public static DisplayTarget? Find(string? id) =>
         DisplayBus.Current.FirstOrDefault(t => string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
 
     public static int LevelOf(DisplayTarget target) =>

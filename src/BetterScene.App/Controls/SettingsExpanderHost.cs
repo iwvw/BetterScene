@@ -18,7 +18,6 @@ internal sealed class SettingsExpanderHost
     private readonly SettingsExpander _expander;
     private readonly Slider _brightness;
     private readonly TextBlock _brightnessText;
-    private readonly StackPanel _extrasHost;
 
     public SettingsExpanderHost(DisplaySliderItem item)
     {
@@ -38,6 +37,18 @@ internal sealed class SettingsExpanderHost
         };
 
         _brightness.ValueChanged += (_, e) => item.Level = (int)Math.Round(e.NewValue);
+
+        _expander = new SettingsExpander
+        {
+            Header = item.Title,
+            Description = item.Subtitle,
+            // 间距统一交给外层 StackPanel 的 Spacing 控制，
+            // 这里再加外边距会让卡片之间的距离和上方"当前场景"不一致。
+            Margin = new Thickness(0),
+        };
+
+        // 订阅必须在 _expander 建好后挂上：回调里要用到 _expander，
+        // 提前订阅会让编译器认为该字段可能尚未赋值。
         item.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(DisplaySliderItem.Level) or nameof(DisplaySliderItem.LevelText))
@@ -51,20 +62,10 @@ internal sealed class SettingsExpanderHost
             if (e.PropertyName == nameof(DisplaySliderItem.CanControl)) _brightness.IsEnabled = item.CanControl;
         };
 
-        _expander = new SettingsExpander
-        {
-            Header = item.Title,
-            Description = item.Subtitle,
-            // 间距统一交给外层 StackPanel 的 Spacing 控制，
-            // 这里再加外边距会让卡片之间的距离和上方"当前场景"不一致。
-            Margin = new Thickness(0),
-        };
-
         // 扩展项挂在一个不可见的 SettingsCard 里不合适，改用 Expander 的
         // Items 直接追加 SettingsCard；这里先放亮度。
         _expander.Items.Add(BuildBrightnessCard(item));
 
-        _extrasHost = new StackPanel();
         Root = _expander;
     }
 

@@ -42,7 +42,7 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -92,7 +92,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # 手动触发时 prepare 刚推送了被 bump 的提交，取分支最新；tag 触发时取该 tag 的提交。
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.sha }}
@@ -117,7 +117,7 @@ jobs:
           Write-Host "Build version: $v"
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -158,7 +158,7 @@ jobs:
             -Configuration $env:CONFIGURATION
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: BetterScene-${{ matrix.arch }}
           path: |
@@ -173,12 +173,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
           merge-multiple: true
@@ -212,7 +212,7 @@ jobs:
             -PreviousTag "${{ steps.meta.outputs.previous }}"
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.meta.outputs.version }}
           files: artifacts/*

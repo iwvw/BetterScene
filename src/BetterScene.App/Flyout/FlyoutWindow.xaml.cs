@@ -51,7 +51,9 @@ public sealed partial class FlyoutWindow : Window
 
     public event Action? SettingsRequested;
 
-    public event EventHandler? Closed;
+    /// <summary>退场动画结束后触发。不用 <c>Closed</c> 这个名字，
+    /// 它会遮蔽 <see cref="Window.Closed"/>，语义也不同（窗口只是隐藏，不销毁）。</summary>
+    public event EventHandler? Hidden;
 
     public FlyoutWindow()
     {
@@ -378,7 +380,7 @@ public sealed partial class FlyoutWindow : Window
             _windowShown = false;
             _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
             _appWindow.MoveAndResize(_targetRect);
-            Closed?.Invoke(this, EventArgs.Empty);
+            Hidden?.Invoke(this, EventArgs.Empty);
         });
     }
 

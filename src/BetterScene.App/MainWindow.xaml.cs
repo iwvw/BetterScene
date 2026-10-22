@@ -252,7 +252,7 @@ public sealed partial class MainWindow : Window
             ShowAndActivate();
             NavView.SelectedItem = NavView.SettingsItem;
         };
-        flyout.Closed += (_, _) => _flyout = null;
+        flyout.Hidden += (_, _) => _flyout = null;
         return flyout;
     }
 
