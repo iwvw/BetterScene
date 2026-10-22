@@ -17,7 +17,11 @@
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
     <PublishSingleFile>false</PublishSingleFile>
-    <EnableMsixTooling>false</EnableMsixTooling>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WinUISDKReferences>false</WinUISDKReferences>
+
+    <!-- 只保留中文与英文的卫星资源程序集，去掉其余语言目录（约省 11 MB）。 -->
+    <SatelliteResourceLanguages>zh-Hans;zh-Hant;en</SatelliteResourceLanguages>
 
     <!--
       WinUI 3 必须有 .pri 资源包才能加载 XAML 资源字典（XamlControlsResources 等）。
@@ -104,5 +108,84 @@
           DestinationFolder="$(PublishDir)"
           SkipUnchangedFiles="true"
           Condition="'@(_PriFiles)' != ''" />
+  </Target>
+
+  <!--
+    发布后删除本项目运行期完全不使用的运行时组件。
+
+    Windows App SDK 的发布目录会带上一整套 Windows ML / AI / 语义搜索 /
+    小组件 / WebView2 的投影程序集，本项目一个都不用：
+      onnxruntime.dll  20.7 MB
+      DirectML.dll     17.8 MB
+      其余 AI/搜索/小组件/WebView2 合计约 7 MB
+    删掉这些能让安装包小一半以上。
+
+    注意 PublishTrimmed 不能开：WinUI 3 的 XAML 依赖运行时反射，
+    trimming 会裁掉绑定所需类型，导致启动时 XamlParseException。
+    所以用"按文件名精确删除"而不是让链接器猜。
+  -->
+  <Target Name="RemoveUnusedRuntimeDlls" AfterTargets="Publish">
+    <ItemGroup>
+      <!-- 调试器 / 崩溃转储 / 重启代理：正常使用不需要。 -->
+      <UnusedRuntimeDll Include="$(PublishDir)mscordaccore*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)mscordbi.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)createdump.exe" />
+      <UnusedRuntimeDll Include="$(PublishDir)RestartAgent.exe" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.DiaSymReader.Native.amd64.dll" />
+
+      <!-- Windows ML / AI / 语义搜索 / 内容安全（体积最大的一块）。 -->
+      <UnusedRuntimeDll Include="$(PublishDir)onnxruntime.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)DirectML.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)NPUDetect.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.AI*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.AI*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Internal.AI*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Vision*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Vision*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Internal.Vision*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.SemanticSearch*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.SemanticSearch*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.ImageCreationInternal*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Internal.ImageCreation*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.ContentModeration*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.AI.ContentModeration*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Graphics.Imaging*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Graphics.ImagingInternal*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)PerceptiveStreaming.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)System.Numerics.Tensors.dll" />
+
+      <!-- 搜索 / 小组件。 -->
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Search*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Search*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Widgets*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Widgets*.winmd" />
+
+      <!-- Workloads（Copilot+ PC 本地模型运行时）。 -->
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Workloads*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Workloads*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Windows.Private.Workloads*.winmd" />
+      <UnusedRuntimeDll Include="$(PublishDir)workloads.*.json" />
+
+      <!-- WebView2（本项目不使用）。 -->
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.Web.WebView2*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)WebView2Loader.dll" />
+
+      <!-- WinForms / VB 残留（托盘用 H.NotifyIcon，不需要 WinForms 运行时）。 -->
+      <UnusedRuntimeDll Include="$(PublishDir)System.Windows.Forms*.dll" />
+      <UnusedRuntimeDll Include="$(PublishDir)Microsoft.VisualBasic*.dll" />
+    </ItemGroup>
+
+    <Delete Files="@(UnusedRuntimeDll)" ContinueOnError="true" />
+
+    <ItemGroup>
+      <UnusedSatelliteResources Include="$(PublishDir)**\System.Windows.Forms*.resources.dll" />
+      <UnusedSatelliteResources Include="$(PublishDir)**\Microsoft.VisualBasic*.resources.dll" />
+    </ItemGroup>
+    <Delete Files="@(UnusedSatelliteResources)" ContinueOnError="true" />
+
+    <!-- 语言目录只保留中英文，其余删掉（约省 15 MB）。 -->
+    <Exec Command="powershell -NoProfile -Command &quot;$keep=@('zh-CN','zh-Hans','zh-Hant','en','en-us','en-US','en-GB'); Get-ChildItem -LiteralPath '$(PublishDir)' -Directory | Where-Object { $_.Name -match '^[a-z]{2}(-[A-Za-z]+)?$' -and $keep -notcontains $_.Name } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue&quot;" ContinueOnError="true" />
+
+    <Message Importance="high" Text="已移除未使用的运行时组件（ML/AI/搜索/小组件/Workloads/WebView2/调试器/WinForms/多余语言目录）。" />
   </Target>
 </Project>
