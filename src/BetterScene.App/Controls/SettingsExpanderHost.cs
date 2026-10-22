@@ -73,12 +73,27 @@ internal sealed class SettingsExpanderHost
 
     public void Update(DisplaySliderItem item)
     {
-        _expander.Header = item.Title;
-        _expander.Description = item.Subtitle;
+        // 逐项比对再赋值：WinUI 的属性 setter 即使值相同也会走
+        // 依赖属性通知链，概览页在拖动亮度时每帧都会调到这里，
+        // 无脑赋值会让滑块拖动明显发涩。
+        if (!string.Equals(_expander.Header?.ToString(), item.Title, StringComparison.Ordinal))
+        {
+            _expander.Header = item.Title;
+        }
+
+        if (!string.Equals(_expander.Description?.ToString(), item.Subtitle, StringComparison.Ordinal))
+        {
+            _expander.Description = item.Subtitle;
+        }
 
         if (Math.Abs(_brightness.Value - item.Level) >= 0.5) _brightness.Value = item.Level;
-        _brightness.IsEnabled = item.CanControl;
-        _brightnessText.Text = item.LevelText;
+
+        if (_brightness.IsEnabled != item.CanControl) _brightness.IsEnabled = item.CanControl;
+
+        if (!string.Equals(_brightnessText.Text, item.LevelText, StringComparison.Ordinal))
+        {
+            _brightnessText.Text = item.LevelText;
+        }
     }
 
     /// <summary>替换扩展控制项。每次整体重建，避免残留旧控件。</summary>

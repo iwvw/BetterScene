@@ -477,7 +477,11 @@ public sealed partial class MainWindow : Window
     private void Navigate(Type pageType)
     {
         if (NavFrame.CurrentSourcePageType == pageType) return;
-        NavFrame.Navigate(pageType, null, new EntranceNavigationTransitionInfo());
+
+        // 用 SuppressNavigationTransitionInfo 而不是 EntranceNavigationTransitionInfo：
+        // 后者会跑一个 300ms 的滑入动画，期间页面还要完成首次布局，
+        // 在概览页这种要建多张 SettingsExpander 的页面上会明显卡顿。
+        NavFrame.Navigate(pageType, null, new SuppressNavigationTransitionInfo());
     }
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -502,15 +506,35 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 从托盘退出程序。
+    ///
+    /// 顺序很重要：先清理资源，再真正结束进程。
+    /// 之前这里只调了 App.Shutdown()——那只是我们自己的资源清理方法，
+    /// 不会结束进程，结果就是托盘图标没了、窗口也没了，
+    /// 但进程还在后台跑，用户既看不到也关不掉。
+    /// </summary>
     private void ExitFromTray()
     {
         _forceExit = true;
+
+        // 先摘掉托盘图标，避免退出过程中残留一个点不动的图标。
         _tray.Dispose();
         _tray.Show(false);
+
         _flyout?.CloseFlyout();
         _flyout = null;
+
+        // 清理托管的资源（快捷键、钩子、显示器管道等）。
         App.Current.Shutdown();
+
         _appWindow?.Destroy();
+
+        // 最后真正退出消息循环。
+        // 用 Environment.Exit 而不是 Application.Exit：
+        // 后者要等 UI 线程把消息队列排空，而 DDC 相关的后台线程
+        // 可能还有未完成的写入，会导致进程迟迟不退。
+        Environment.Exit(0);
     }
 
     private void Dispatch(Action action)

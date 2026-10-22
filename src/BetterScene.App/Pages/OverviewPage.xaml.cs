@@ -25,6 +25,11 @@ public sealed partial class OverviewPage : Page
     public OverviewPage()
     {
         InitializeComponent();
+
+        // 页面缓存：切换导航时不重建整页。
+        // 概览页要建多张 SettingsExpander、显示器页要跑能力探测，
+        // 每次切回来都重建会明显卡顿。
+        NavigationCacheMode = Microsoft.UI.Xaml.Navigation.NavigationCacheMode.Required;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -97,7 +102,27 @@ public sealed partial class OverviewPage : Page
 
     private void OnDisplaysChanged() => _ = DispatcherQueue.TryEnqueue(Refresh);
 
-    private void OnBrightnessChanged(BrightnessChange change) => _ = DispatcherQueue.TryEnqueue(Refresh);
+    /// <summary>
+    /// 亮度变化只影响滑块，不需要重建整页。
+    ///
+    /// 之前这里也是 Refresh()，而 Refresh 会走 RebuildDisplays +
+    /// 重新计算场景/壁纸文字。拖动亮度时 BrightnessHub.Changed 每帧都发，
+    /// 整页重建就把 UI 线程占满了——这就是"概览页很卡"的直接原因。
+    /// </summary>
+    private void OnBrightnessChanged(BrightnessChange change)
+    {
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            foreach (DisplayTarget target in DisplayBus.Current)
+            {
+                if (!_items.TryGetValue(target.Id, out DisplaySliderItem? item)) continue;
+                if (!_hosts.TryGetValue(target.Id, out Controls.SettingsExpanderHost? host)) continue;
+
+                item.ApplyLevelFromHub(BrightnessHub.LevelOf(target));
+                host.Update(item);
+            }
+        });
+    }
 
     private void OnAutoSceneStateChanged() => _ = DispatcherQueue.TryEnqueue(Refresh);
 

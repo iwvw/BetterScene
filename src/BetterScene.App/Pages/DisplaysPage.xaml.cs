@@ -25,6 +25,11 @@ public sealed partial class DisplaysPage : Page
     public DisplaysPage()
     {
         InitializeComponent();
+
+        // 页面缓存：切换导航时不重建整页。
+        // 概览页要建多张 SettingsExpander、显示器页要跑能力探测，
+        // 每次切回来都重建会明显卡顿。
+        NavigationCacheMode = Microsoft.UI.Xaml.Navigation.NavigationCacheMode.Required;
         DisplayList.ItemsSource = Displays;
     }
 

@@ -87,9 +87,9 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         Hdr.IsSupported ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>mini 面板里是否显示某项（按这台显示器自己的配置判断）。</summary>
-    private bool MiniShows(string name) => MiniControlsOf(Id).Contains(name);
+    private bool MiniShows(string name) => !IsGroup && MiniControlsOf(Id).Contains(name);
 
-    /// <summary>mini 面板里的 HDR 行。</summary>
+    /// <summary>mini 面板里的 HDR 行。组卡片永远隐藏。</summary>
     public Visibility MiniHdrVisibility =>
         Hdr.IsSupported && MiniShows(MiniNames.Hdr) ? Visibility.Visible : Visibility.Collapsed;
 
@@ -458,10 +458,19 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
     /// <summary>
     /// 刷新 HDR 状态。切换 HDR 会重建显示管线，所以这里只读不写。
+    ///
+    /// 带指纹比对：Update() 在拖动亮度时会被每帧调用，
+    /// 每次都查一遍 DisplayConfigGetDeviceInfo 会明显拖慢界面。
+    /// HDR 状态只在用户切换时才变，用 (支持/启用/色深/编码) 做指纹就够。
     /// </summary>
     public void RefreshHdr(DisplayTarget target)
     {
-        Hdr = HdrControl.Read(target);
+        HdrState next = HdrControl.Read(target);
+
+        if (next.Equals(Hdr) && _hdrRead) return;
+
+        Hdr = next;
+        _hdrRead = true;
 
         OnPropertyChanged(nameof(Hdr));
         OnPropertyChanged(nameof(HdrVisibility));
@@ -470,6 +479,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(HdrToggleEnabled));
         OnPropertyChanged(nameof(HdrSummary));
     }
+
+    private bool _hdrRead;
 
     /// <summary>
     /// 切换 HDR。
@@ -504,13 +515,31 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         return true;
     }
 
-    /// <summary>刷新分辨率/刷新率列表与当前值。</summary>
+    /// <summary>
+    /// 刷新分辨率/刷新率列表与当前值。
+    ///
+    /// 这是全流程里最重的一步：Enumerate 要扫数百个 GDI 模式，
+    /// EnumerateRefreshRates 还要对候选档位逐个跑 CDS_TEST。
+    /// 所以用「当前模式 + 分辨率列表长度」做指纹，
+    /// 模式没变就直接返回——拖动亮度时 Update() 每帧都会调到这里。
+    /// </summary>
     public void RefreshDisplayMode(DisplayTarget target)
     {
-        CurrentMode = DisplayModeControl.Read(target);
+        CurrentDisplayMode? mode = DisplayModeControl.Read(target);
+
+        string signature = mode is null
+            ? "none"
+            : $"{mode.Width}x{mode.Height}@{mode.RefreshRate}";
+
+        if (signature == _modeSignature && _modeRead) return;
+
+        _modeSignature = signature;
+        _modeRead = true;
+
+        CurrentMode = mode;
         AvailableModes = DisplayModeControl.Enumerate(target);
 
-        AvailableRefreshRates = CurrentMode is { } mode
+        AvailableRefreshRates = mode is not null
             ? DisplayModeControl.EnumerateRefreshRates(target, mode.Width, mode.Height)
             : new List<int>();
 
@@ -525,6 +554,9 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(ResolutionIndex));
         OnPropertyChanged(nameof(RefreshRateIndex));
     }
+
+    private string _modeSignature = string.Empty;
+    private bool _modeRead;
 
     /// <summary>
     /// 切换分辨率。刷新率会尽量保留当前值，不支持时退回该分辨率下最高档。
@@ -568,10 +600,15 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         return true;
     }
 
-    /// <summary>刷新缩放百分比。</summary>
+    /// <summary>刷新缩放百分比（同样带指纹比对，避免每帧查 DPI）。</summary>
     public void RefreshScale(DisplayTarget target)
     {
-        ScalePercent = DisplayScaleControl.Read(target);
+        int? next = DisplayScaleControl.Read(target);
+
+        if (next == ScalePercent && _scaleRead) return;
+
+        ScalePercent = next;
+        _scaleRead = true;
 
         OnPropertyChanged(nameof(ScalePercent));
         OnPropertyChanged(nameof(ScaleVisibility));
@@ -579,6 +616,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(ScaleLabels));
         OnPropertyChanged(nameof(ScaleIndex));
     }
+
+    private bool _scaleRead;
 
     /// <summary>
     /// 设置缩放。返回 true 只代表注册表已写入，
@@ -626,6 +665,117 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         ApplyLevel(level);
     }
 
+    /// <summary>
+    /// 填充组卡片的扩展控制项（关联模式下用）。
+    ///
+    /// 策略是**并集**：只要某台显示器在 mini 面板里勾选了某项、并且它支持该项，
+    /// 组卡片就显示它。理由：用户通常只会在有该控制项的那台屏上勾选
+    /// （比如只有外接屏有音量），取交集会让组卡片永远空着。
+    ///
+    /// 写入时按能力过滤，只发给真正支持该项的显示器，
+    /// 避免对不支持的那台做无意义、甚至可能报错的写入。
+    /// </summary>
+    public void UpdateGroupExtras(
+        IEnumerable<DisplaySliderItem> members,
+        Func<DisplaySliderItem, IReadOnlyList<MonitorControl>> controlsOf,
+        Action<IReadOnlyList<DisplayTarget>, byte, uint> writeFiltered)
+    {
+        var list = members.ToList();
+
+        MiniSliders.Clear();
+        MiniChoices.Clear();
+        MiniActions.Clear();
+
+        // 收集「控制项 → 支持它的显示器 Id 列表」。
+        var supportedBy = new Dictionary<byte, (MonitorControl Model, List<DisplayTarget> Targets)>();
+
+        foreach (DisplaySliderItem member in list)
+        {
+            DisplayTarget? target = BrightnessHub.Find(member.Id);
+            if (target is null) continue;
+
+            foreach (MonitorControl control in controlsOf(member))
+            {
+                if (!supportedBy.TryGetValue(control.Code, out var entry))
+                {
+                    entry = (control, new List<DisplayTarget>());
+                    supportedBy[control.Code] = entry;
+                }
+
+                if (entry.Targets.All(t => !string.Equals(t.Id, target.Id, StringComparison.OrdinalIgnoreCase)))
+                {
+                    entry.Targets.Add(target);
+                }
+            }
+        }
+
+        if (supportedBy.Count > 0)
+        {
+            // 勾选状态：所有显示器里勾过的项都算。
+            var enabledNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DisplaySliderItem member in list)
+            {
+                foreach (string name in MiniControlsOf(member.Id)) enabledNames.Add(name);
+            }
+
+            foreach (var pair in supportedBy.OrderBy(p => p.Key))
+            {
+                (MonitorControl model, List<DisplayTarget> targets) = pair.Value;
+
+                // 只保留跨屏同步有意义的项。
+                if (!GroupSafeCodes.Contains(model.Code)) continue;
+
+                if (!enabledNames.Contains(model.Name)) continue;
+                if (targets.Count == 0) continue;
+
+                var row = new ControlRow(model, (code, value) => writeFiltered(targets, code, value));
+
+                switch (model.Kind)
+                {
+                    case ControlKind.Slider:
+                        MiniSliders.Add(row);
+                        break;
+                    case ControlKind.Choice:
+                        MiniChoices.Add(row);
+                        break;
+                    default:
+                        MiniActions.Add(row);
+                        break;
+                }
+            }
+        }
+
+        OnPropertyChanged(nameof(MiniSliders));
+        OnPropertyChanged(nameof(MiniChoices));
+        OnPropertyChanged(nameof(MiniActions));
+        OnPropertyChanged(nameof(MiniSlidersVisibility));
+        OnPropertyChanged(nameof(MiniChoicesVisibility));
+        OnPropertyChanged(nameof(MiniActionsVisibility));
+
+        // 组卡片不提供 HDR / 分辨率 / 刷新率 / 缩放：
+        // 这些必须按屏单独设置，统一下发会破坏两台屏各自的最佳配置。
+        OnPropertyChanged(nameof(MiniHdrVisibility));
+        OnPropertyChanged(nameof(MiniResolutionVisibility));
+        OnPropertyChanged(nameof(MiniRefreshRateVisibility));
+        OnPropertyChanged(nameof(MiniScaleVisibility));
+    }
+
+    /// <summary>
+    /// 关联模式下组卡片允许显示的控制项。
+    ///
+    /// 只有音量。亮度是组卡片的主功能，走独立的 ApplyLevel 通道，
+    /// 不经过这个列表。
+    ///
+    /// 明确排除的项及原因：
+    /// - 输入源：每台屏接的设备不同，同步切换会把画面切没
+    /// - 显示模式 / 电源模式：同上，且电源模式是破坏性操作
+    /// - 色温：各屏面板特性不同，统一设置没有意义
+    /// - 对比度：不同面板的响应差别大，统一调节观感不一致
+    /// </summary>
+    private static readonly HashSet<byte> GroupSafeCodes =
+    [
+        ControlCatalog.Volume,
+    ];
     /// <summary>用读到的扩展控制项填充附加行。</summary>
     public void UpdateExtras(DisplayControls controls, Action<byte, uint> write)
     {
@@ -771,6 +921,28 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         }
 
         App.Settings.MiniControlsByDisplay[displayId] = list;
+    }
+
+    /// <summary>
+    /// 只同步亮度值，不动其它属性。
+    ///
+    /// 概览页在 BrightnessHub.Changed 里用它替代整页重建：
+    /// 拖动亮度时只需要让滑块跟上，没必要重算标题/型号/HDR 等十几项属性，
+    /// 更没必要触发布局。
+    /// </summary>
+    public void ApplyLevelFromHub(int level)
+    {
+        if (MonoClock.Within(_lastUserWriteMs, 1500)) return;
+
+        int clamped = Math.Clamp(level, 0, 100);
+        if (_level == clamped) return;
+
+        _suppress = true;
+        _level = clamped;
+        _suppress = false;
+
+        OnPropertyChanged(nameof(Level));
+        OnPropertyChanged(nameof(LevelText));
     }
 
     private void ApplyLevel(int level)

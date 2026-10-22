@@ -427,6 +427,21 @@ public sealed partial class FlyoutPanel : UserControl
     /// 同步显示器列表。关联开关切换时<b>不重建</b>列表结构：
     /// 每台显示器的卡片一直在列表里，只是折叠/展开，动画因此是连续的。
     /// </summary>
+    /// <summary>
+    /// 把控制项写入指定的显示器（组卡片用）。
+    ///
+    /// 只发给支持该项的屏：能力探测已经确定哪些屏有这个控制项，
+    /// 对不支持的屏写入大概率失败，也会让 DDC 队列堆积。
+    /// </summary>
+    private static void WriteControlToTargets(
+        IReadOnlyList<DisplayTarget> targets, byte code, uint value)
+    {
+        foreach (DisplayTarget target in targets)
+        {
+            DisplayBus.WriteControl(target.Id, code, value);
+        }
+    }
+
     private void SyncDisplays(bool linked)
     {
         _group ??= new DisplaySliderItem("__group__", group: true);
@@ -461,6 +476,25 @@ public sealed partial class FlyoutPanel : UserControl
         List<DisplayTarget> targets = BrightnessHub.Controllable.ToList();
         _group.UpdateGroup(AverageLevel(targets), targets.Count > 0);
         _group.IsCollapsed = !linked;
+
+        // 关联模式：组卡片除亮度外也承载各屏共有的扩展项（音量、对比度等）。
+        // 取交集——组卡片的写入会同时下发给每台屏，只显示所有屏都支持的那些。
+        if (linked)
+        {
+            var members = _items.Values.ToList();
+
+            _group.UpdateGroupExtras(
+                members,
+                member => member.LastControls?.Items ?? new List<MonitorControl>(),
+                WriteControlToTargets);
+        }
+        else
+        {
+            _group.UpdateGroupExtras(
+                Array.Empty<DisplaySliderItem>(),
+                _ => Array.Empty<MonitorControl>(),
+                (_, _, _) => { });
+        }
 
         if (!Displays.Contains(_group)) Displays.Insert(0, _group);
 
