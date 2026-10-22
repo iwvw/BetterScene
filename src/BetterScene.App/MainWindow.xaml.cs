@@ -24,6 +24,9 @@ public sealed partial class MainWindow : Window
     private AppWindow? _appWindow;
     private bool _forceExit;
     private bool _initialPageLoaded;
+
+    /// <summary>最近一次检查到的更新；标题栏按钮和点击更新都用它。</summary>
+    private BetterScene.Core.UpdateInfo _pendingUpdate;
     /// <summary>
     /// 上一次真正设置过的任务栏明暗。null 表示还没设置过。
     ///
@@ -35,6 +38,11 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
 
         Title = ProductInfo.DisplayName;
+
+        if (AppVersionText is not null)
+        {
+            AppVersionText.Text = $"v{BetterScene.Core.UpdateService.CurrentVersion()}";
+        }
 
         _hwnd = WindowNative.GetWindowHandle(this);
         _appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_hwnd));
@@ -281,6 +289,84 @@ public sealed partial class MainWindow : Window
     }
 
     public TrayIconRect? TryGetTrayBounds() => _tray.TryTrayBounds();
+
+    /// <summary>
+    /// 后台检查到新版本时调用。
+    /// 标题栏按钮是常驻入口，通知只是附带提示。
+    /// </summary>
+    public void NotifyUpdateAvailable(BetterScene.Core.UpdateInfo info)
+    {
+        _pendingUpdate = info;
+        ShowUpdateBadge(info);
+
+        if (App.Settings.UpdateSuppressNotifications) return;
+        if (!App.Settings.ShowTrayIcon) return;
+
+        _tray.ShowNotification(
+            $"{ProductInfo.DisplayName} 有新版本",
+            $"v{info.LatestVersion} 已发布，点击标题栏按钮即可更新。");
+    }
+
+    /// <summary>自动安装开始前的提示。用户可以借此知道程序为什么突然重启。</summary>
+    public void NotifyAutoUpdateStarting(BetterScene.Core.UpdateInfo info)
+    {
+        _pendingUpdate = info;
+        SetUpdateBadgeText($"正在更新到 v{info.LatestVersion}");
+
+        if (App.Settings.UpdateSuppressNotifications) return;
+        if (!App.Settings.ShowTrayIcon) return;
+
+        _tray.ShowNotification(
+            $"{ProductInfo.DisplayName} 正在更新",
+            $"正在安装 v{info.LatestVersion}，完成后会自动重启。");
+    }
+
+    /// <summary>标题栏「更新到 vX」按钮的显隐与文案。</summary>
+    private void ShowUpdateBadge(BetterScene.Core.UpdateInfo info)
+    {
+        if (UpdateButton is null) return;
+
+        if (!info.HasUpdate)
+        {
+            UpdateButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        SetUpdateBadgeText($"更新到 v{info.LatestVersion}");
+        UpdateButton.Visibility = Visibility.Visible;
+        UpdateButton.IsEnabled = true;
+    }
+
+    private void SetUpdateBadgeText(string text)
+    {
+        if (UpdateButtonText is not null) UpdateButtonText.Text = text;
+    }
+
+    private async void OnUpdateBadgeClick(object sender, RoutedEventArgs e)
+    {
+        if (!_pendingUpdate.HasUpdate) return;
+
+        UpdateButton.IsEnabled = false;
+        SetUpdateBadgeText("下载中 0%");
+
+        var progress = new Progress<double>(p => SetUpdateBadgeText($"下载中 {p:P0}"));
+
+        bool ok = await BetterScene.Core.UpdateService.ApplyAsync(
+            _pendingUpdate, App.Settings.GitHubAccelerator, progress);
+
+        if (ok) return;
+
+        // 成功时进程会被更新脚本接管并退出，走不到这里。
+        SetUpdateBadgeText($"更新到 v{_pendingUpdate.LatestVersion}");
+        UpdateButton.IsEnabled = true;
+    }
+
+    /// <summary>设置页点「检查更新」后，把结果同步到标题栏按钮。</summary>
+    public void SyncUpdateBadge(BetterScene.Core.UpdateInfo info)
+    {
+        _pendingUpdate = info;
+        ShowUpdateBadge(info);
+    }
 
     public void ReportDisplayState(int count)
     {

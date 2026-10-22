@@ -139,7 +139,26 @@ internal static class CapabilityProbe
             MonitorControl? control = BuildControl(target, code, current, maximum, capabilities);
             if (control is not null) result.Items.Add(control);
         }
+
+        // 按控件形态分组排列：滑块 → 下拉框 → 按钮组。
+        //
+        // 探测顺序是按 VCP 代码升序的（0x12 对比度、0x14 色彩、0x60 输入源…），
+        // 那个顺序对用户没有意义，反而会让形态穿插在一起
+        // （滑块、下拉、滑块、按钮、下拉），扫视成本很高。
+        // 同形态排在一起后，眼睛可以按"连续的条 / 框 / 按钮"快速定位。
+        //
+        // 组内保持原有顺序（VCP 升序）：那是稳定的，不会每次探测都变。
+        result.Items.Sort((a, b) => KindOrder(a.Kind).CompareTo(KindOrder(b.Kind)));
     }
+
+    /// <summary>控件形态的排列优先级：滑块最常用，放最前；按钮组最少用，放最后。</summary>
+    private static int KindOrder(ControlKind kind) => kind switch
+    {
+        ControlKind.Slider => 0,
+        ControlKind.Choice => 1,
+        ControlKind.Action => 2,
+        _ => 3,
+    };
 
     private static MonitorControl? BuildControl(
         DisplayTarget target, byte code, uint current, uint maximum, string capabilities)

@@ -74,6 +74,12 @@ public sealed partial class FlyoutWindow : Window
         WindowChrome.SetRoundCorner(_hwnd);
         WindowChrome.RemoveNonClientFrame(_hwnd);
 
+        // 切换系统缩放或把面板拖到不同 DPI 的显示器时，
+        // XAML 会按新 DPI 重新排版，但窗口物理尺寸还停在旧值，
+        // 结果是内容（尤其是 Slider 的滑块和轨道）被拉伸或压扁。
+        // 收到通知后按新 DPI 重算一次落位矩形。
+        WindowChrome.DpiChanged += OnDpiChanged;
+
         TrySetBackdrop();
 
         _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
@@ -297,6 +303,58 @@ public sealed partial class FlyoutWindow : Window
         ApplyContentSize(_contentHeightDip);
     }
 
+    /// <summary>
+    /// DPI 变化：系统缩放被改，或面板跨到了另一块不同缩放的显示器。
+    ///
+    /// 两件事必须同时做，缺一不可：
+    /// 1. 按新 DPI 重算窗口的物理矩形（_widthDip/_heightDip 是 DIP，要重新乘缩放）
+    /// 2. 让 XAML 按新 DPI 重新排版
+    ///
+    /// 只做 1 会让内容和窗口尺寸对不上；只做 2 会让窗口停在旧物理尺寸，
+    /// 表现为面板整体偏大/偏小，Slider 的滑块与轨道比例失真。
+    /// </summary>
+    private void OnDpiChanged(IntPtr hwnd)
+    {
+        if (hwnd != _hwnd) return;
+        if (!_windowShown) return;
+
+        try
+        {
+            // 内容高度是 DIP，不随 DPI 变，但窗口物理高度要重新换算。
+            if (_contentHeightDip > 0)
+            {
+                _heightDip = (int)Math.Ceiling(Math.Max(_contentHeightDip, MinHeightDip));
+            }
+
+            RectInt32 target = DpiLayout.ComputeBottomRight(
+                _appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+
+            _targetRect = target;
+
+            // 动画进行中不要抢窗口位置，等它自己结束；
+            // 但内容仍要重新排版，否则会一直用旧缩放。
+            if (_state is not (VisState.Showing or VisState.Hiding))
+            {
+                _appWindow.MoveAndResize(target);
+            }
+
+            // 让 XAML 按新 DPI 重新测量排版。
+            if (Content is FrameworkElement root)
+            {
+                root.InvalidateMeasure();
+                root.UpdateLayout();
+            }
+
+            Panel.UpdateLayout();
+
+            Log.Info($"flyout dpi changed: {_widthDip}x{_heightDip} dip -> {target.Width}x{target.Height} px");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"flyout dpi change handling failed: {ex.Message}");
+        }
+    }
+
     private void ApplyContentSize(double contentHeightDip)
     {
         if (_dragging || contentHeightDip <= 0) return;
@@ -419,6 +477,10 @@ public sealed partial class FlyoutWindow : Window
     {
         if (_closing) return;
         _closing = true;
+
+        // 必须先退订静态事件：它会持有这个窗口实例，
+        // 之后任何窗口的 DPI 变化都会回调到已销毁的对象上。
+        WindowChrome.DpiChanged -= OnDpiChanged;
 
         // 计时器必须先停：窗口销毁后它还会 tick，
         // 回调里访问 _hwnd / _appWindow 会直接崩在 WinRT 层。

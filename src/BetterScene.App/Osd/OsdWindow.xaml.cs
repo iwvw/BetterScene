@@ -16,15 +16,19 @@ namespace BetterScene.App.Osd;
 
 public sealed partial class OsdWindow : Window
 {
+    /// <summary>
+    /// 设计宽度，只在内容尚未完成测量时用作兜底。
+    ///
+    /// 真正决定窗口宽度的是 <see cref="MeasureContentWidth"/>：
+    /// 内容宽度取决于图标字形、数字位数和 DPI 缩放，
+    /// 写死一个数值迟早会在某个组合下把百分比裁掉。
+    /// </summary>
     private const int DesignWidth = 180;
 
-    /// <summary>
-    /// 显示百分比时窗口要更宽，否则文字会被切掉。
-    /// 构成：Padding 30 + 图标 16 + 间距 11 + 进度条 124 + 间距 11 + 文字 26 = 218。
-    /// </summary>
-    private const int DesignWidthWithPercent = 224;
+    /// <summary>显示百分比时的兜底宽度（内容未测量完成时使用）。</summary>
+    private const int DesignWidthWithPercent = 240;
 
-    private const int DesignHeight = 44;
+    private const int DesignHeight = 0;
     private const int MarginBottomDip = 8;
     private const int ShowDurationMs = 170;
     private const int HideDurationMs = 130;
@@ -458,8 +462,50 @@ public sealed partial class OsdWindow : Window
         int anchorX = target is null ? 0 : target.Left + target.Width / 2;
         int anchorY = target is null ? 0 : target.Top + target.Height / 2;
 
-        int width = ShowPercent ? DesignWidthWithPercent : DesignWidth;
-        return DpiLayout.ComputeBottomCenter(_appWindow, anchorX, anchorY, width, DesignHeight, MarginBottomDip);
+        (int width, int height) = MeasureContent(target);
+
+        Log.Info($"osd rect: content={width}x{height} dip, percent={ShowPercent}");
+
+        return DpiLayout.ComputeBottomCenter(_appWindow, anchorX, anchorY, width, height, MarginBottomDip);
+    }
+
+    /// <summary>
+    /// 按 XAML 实际排版结果量出内容尺寸（DIP）。
+    ///
+    /// 以前这里用写死的 224×44，但内容真实尺寸取决于：
+    /// 图标字形宽度、百分比位数（100% 比 5% 宽）、以及 DPI 下的取整。
+    /// 任何一项变化都可能让百分比被窗口裁掉。
+    ///
+    /// 现在直接问 XAML「排完需要多大」，加 1px 余量吸收子像素舍入。
+    /// 窗口尺寸本身由 <see cref="ComputeRect"/> 按这个结果设置，
+    /// 所以不会再出现内容比窗口宽的情况。
+    /// </summary>
+    private (int Width, int Height) MeasureContent(DisplayTarget? target)
+    {
+        try
+        {
+            if (Content is FrameworkElement root)
+            {
+                // 无约束测量：让内容报告它"想"要多大，而不是被当前窗口宽度限制。
+                root.Measure(new Windows.Foundation.Size(
+                    double.PositiveInfinity, double.PositiveInfinity));
+
+                double w = root.DesiredSize.Width;
+                double h = root.DesiredSize.Height;
+
+                if (w > 1 && h > 1)
+                {
+                    return ((int)Math.Ceiling(w) + 1, (int)Math.Ceiling(h) + 1);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"osd measure failed: {ex.Message}");
+        }
+
+        // 测量失败时退回兜底尺寸（足够容纳 100% 三位数）。
+        return (ShowPercent ? DesignWidthWithPercent : DesignWidth, 44);
     }
 
     /// <summary>百分比列是否显示。同时决定窗口宽度。</summary>

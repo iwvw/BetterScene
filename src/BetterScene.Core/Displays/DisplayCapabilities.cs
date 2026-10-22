@@ -106,10 +106,24 @@ public static class VcpTable
 
     public static string NameOf(byte code) =>
         Known.TryGetValue(code, out Entry? entry) ? entry.Name : $"VCP 0x{code:X2}";
-
     public static VcpKind KindOf(byte code) =>
         Known.TryGetValue(code, out Entry? entry) ? entry.Kind : VcpKind.ReadOnly;
 
     public static string HintOf(byte code) =>
         Known.TryGetValue(code, out Entry? entry) ? entry.Hint : string.Empty;
+}
+
+/// <summary>
+/// mini 面板里不属于 DDC/CI 的几项的控制项名称。
+///
+/// HDR、分辨率、刷新率、缩放由显示管线控制，没有 VCP 代码，
+/// 但它们在「显示哪些控制项」的勾选列表里和 VCP 项混在一起，
+/// 所以统一用字符串名标识。
+/// </summary>
+public static class MiniNames
+{
+    public const string Hdr = "HDR";
+    public const string Resolution = "分辨率";
+    public const string RefreshRate = "刷新率";
+    public const string Scale = "缩放";
 }

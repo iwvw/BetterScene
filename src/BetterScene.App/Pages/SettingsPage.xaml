@@ -99,8 +99,9 @@
                                       SelectionChanged="OnMiniAutoHideChanged" />
                         </tk:SettingsCard>
                         <tk:SettingsCard Header="显示的控制项"
-                                         Description="勾选后会出现在迷你面板里，具体哪些可用取决于显示器本身。">
-                            <StackPanel x:Name="MiniControlList" Spacing="2" MinWidth="220" />
+                                         Description="每台显示器在「显示器」页单独配置，可以只为某台屏开启某些项。">
+                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Text="前往「显示器」页 → 展开对应显示器 → 迷你面板控制项" />
                         </tk:SettingsCard>
                     </tk:SettingsExpander.Items>
                 </tk:SettingsExpander>
@@ -114,6 +115,66 @@
                             <TextBlock x:Name="DataDirText"
                                        IsTextSelectionEnabled="True"
                                        TextTrimming="CharacterEllipsis" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <tk:SettingsExpander Header="更新">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE777;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="当前状态"
+                                         Description="从 GitHub Releases 检查新版本。">
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <TextBlock x:Name="UpdateStatusText"
+                                           MinWidth="120"
+                                           VerticalAlignment="Center"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="尚未检查" />
+                                <Button x:Name="UpdateActionButton"
+                                        Content="检查更新"
+                                        Click="OnUpdateAction" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="自动检查更新"
+                                         Description="在后台定期检查，发现新版本时提醒。">
+                            <ToggleSwitch x:Name="AutoCheckUpdateSwitch"
+                                          Toggled="OnAutoCheckUpdateToggled" />
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="启动时检查"
+                                         Description="程序启动后自动检查一次。">
+                            <ToggleSwitch x:Name="CheckOnStartupSwitch"
+                                          Toggled="OnUpdateOptionChanged" />
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="自动下载并安装"
+                                         Description="发现新版本后直接更新并重启，不再询问。">
+                            <ToggleSwitch x:Name="AutoInstallSwitch"
+                                          Toggled="OnUpdateOptionChanged" />
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="不显示通知"
+                                         Description="只在设置页显示结果，不弹窗打扰。">
+                            <ToggleSwitch x:Name="SuppressNotifySwitch"
+                                          Toggled="OnUpdateOptionChanged" />
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="检查频率"
+                                         Description="自动检查的间隔。">
+                            <ComboBox x:Name="UpdateIntervalBox"
+                                      MinWidth="160"
+                                      SelectionChanged="OnUpdateIntervalChanged" />
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="下载加速"
+                                         Description="GitHub 下载加速前缀，留空则优先用内置镜像链。">
+                            <TextBox x:Name="AcceleratorBox"
+                                     Width="280"
+                                     PlaceholderText="例如 https://ghfast.top/"
+                                     TextChanged="OnAcceleratorChanged" />
                         </tk:SettingsCard>
                     </tk:SettingsExpander.Items>
                 </tk:SettingsExpander>
@@ -139,27 +200,6 @@
                                                Text="版本 0.1.0" />
                                 </StackPanel>
                             </StackPanel>
-                        </tk:SettingsCard>
-
-                        <tk:SettingsCard Header="软件更新"
-                                         Description="从 GitHub Releases 检查新版本。">
-                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                <TextBlock x:Name="UpdateStatusText"
-                                           VerticalAlignment="Center"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                           Text="尚未检查" />
-                                <Button x:Name="UpdateActionButton"
-                                        Content="检查更新"
-                                        Click="OnUpdateAction" />
-                            </StackPanel>
-                        </tk:SettingsCard>
-
-                        <tk:SettingsCard Header="下载加速"
-                                         Description="GitHub 下载加速前缀，留空则优先用内置镜像链。">
-                            <TextBox x:Name="AcceleratorBox"
-                                     Width="280"
-                                     PlaceholderText="例如 https://ghfast.top/"
-                                     TextChanged="OnAcceleratorChanged" />
                         </tk:SettingsCard>
                     </tk:SettingsExpander.Items>
                 </tk:SettingsExpander>

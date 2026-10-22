@@ -35,10 +35,45 @@ public sealed class AppSettings
 
     /// <summary>启动时自动检查更新。</summary>
     public bool AutoCheckUpdate { get; set; } = true;
+
+    /// <summary>是否在程序启动时立即检查一次更新。</summary>
+    public bool UpdateCheckOnStartup { get; set; } = true;
+
+    /// <summary>发现新版本后自动下载并安装，无需用户点击。</summary>
+    public bool UpdateAutoInstall { get; set; }
+
+    /// <summary>不弹出任何更新通知（仍然可以手动检查）。</summary>
+    public bool UpdateSuppressNotifications { get; set; }
+
+    /// <summary>后台检查更新的间隔小时数。0 = 只在启动时检查。</summary>
+    public int UpdateCheckIntervalHours { get; set; } = 168;
+
+    /// <summary>上次检查更新的时间（UTC），用于判断是否到了下一个检查周期。</summary>
+    public string UpdateLastCheckedUtc { get; set; } = string.Empty;
+
+    /// <summary>已经提醒过的版本号，避免同一版本反复打扰。</summary>
+    public string UpdateSkippedVersion { get; set; } = string.Empty;
+
     public bool LinkDisplays { get; set; }
     public bool AutoScene { get; set; }
 
-    /// <summary>mini 面板里要显示哪些扩展控制项（VCP 名称）。空 = 只显示亮度。</summary>
+    /// <summary>
+    /// 每台显示器在 mini 面板里要显示哪些控制项。
+    ///
+    /// 键是显示器 Id，值是控制项名称集合（VCP 名称，以及 HDR / 分辨率 /
+    /// 刷新率 / 缩放 这几个非 VCP 项）。
+    ///
+    /// 为什么按显示器分开：不同屏幕的能力和用途差别很大——
+    /// 外接屏可能只想调亮度和输入源，内屏可能只想看分辨率和缩放。
+    /// 全局一套勾选没法表达这种差异。
+    /// </summary>
+    public Dictionary<string, List<string>> MiniControlsByDisplay { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 旧版的全局勾选。仅用于迁移到 <see cref="MiniControlsByDisplay"/>，
+    /// 迁移完成后不再读写。
+    /// </summary>
     public List<string> MiniPanelControls { get; set; } = new();
 
     public AutoSwitchSettings AutoSwitch { get; set; } = new();

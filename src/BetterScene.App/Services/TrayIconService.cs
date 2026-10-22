@@ -271,9 +271,37 @@ public sealed class TrayIconService
     private Microsoft.UI.Dispatching.DispatcherQueue? _uiQueue;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _reconcileTimer;
 
-    public void UpdateState(TrayState state, string text)
+    /// <summary>
+    /// 弹出一条系统通知。
+    ///
+    /// 用托盘图标自带的 ShowNotification：它走系统通知中心，
+    /// 不需要额外引第三方通知库，也能在「勿扰」时段被系统正确抑制。
+    /// </summary>
+    public void ShowNotification(string title, string message)
     {
         if (_icon is null) return;
+
+        try
+        {
+            _icon.ShowNotification(
+                title,
+                message,
+                NotificationIcon.Info,
+                customIconHandle: null,
+                largeIcon: false,
+                sound: true,
+                respectQuietTime: true,
+                realtime: false,
+                timeout: null);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"tray notification failed: {ex.Message}");
+        }
+    }
+
+    public void UpdateState(TrayState state, string text)
+    {        if (_icon is null) return;
 
         _icon.ToolTipText = $"{ProductInfo.DisplayName} · {text}";
 

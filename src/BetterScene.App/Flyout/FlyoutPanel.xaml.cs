@@ -5,6 +5,7 @@ using BetterScene.Core;
 using BetterScene.Core.Displays;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
@@ -252,7 +253,12 @@ public sealed partial class FlyoutPanel : UserControl
             if (!_items.TryGetValue(controls.DisplayId, out DisplaySliderItem? item)) return;
 
             // 拖动中不重建控件，否则会把用户正在拖的滑块换掉。
-            if (item.MiniExtras.Any(row => row.IsDragging)) return;
+            if (item.MiniSliders.Any(row => row.IsDragging)
+                || item.MiniChoices.Any(row => row.IsDragging)
+                || item.MiniActions.Any(row => row.IsDragging))
+            {
+                return;
+            }
 
             // 写入必须绑定到这台显示器；之前用了一个从未赋值的字段，
             // 导致 mini 面板上所有调节都被静默丢弃。
@@ -655,6 +661,107 @@ public sealed partial class FlyoutPanel : UserControl
 
     private void OnSettingsClick(object sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
 
+    // ---- HDR / 分辨率 / 刷新率 / 缩放 ----
+
+    /// <summary>面板里点 HDR 按钮。切换期间禁用，避免重复触发管线重建。</summary>
+    private async void OnMiniHdrClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: string id } button) return;
+        if (!_items.TryGetValue(id, out DisplaySliderItem? item)) return;
+
+        bool wanted = button.IsChecked == true;
+
+        // 回填导致的 IsChecked 变化不该下发。
+        if (item.HdrEnabled == wanted) return;
+
+        button.IsEnabled = false;
+
+        try
+        {
+            bool ok = await item.ToggleHdrAsync(wanted);
+
+            if (!ok)
+            {
+                button.IsChecked = item.HdrEnabled;
+            }
+        }
+        finally
+        {
+            button.IsEnabled = item.HdrToggleEnabled;
+        }
+    }
+
+    private void OnMiniResolutionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox { Tag: string id } combo) return;
+        if (!_items.TryGetValue(id, out DisplaySliderItem? item)) return;
+
+        int index = combo.SelectedIndex;
+        if (index < 0) return;
+
+        var resolutions = item.AvailableModes
+            .Select(m => (m.Width, m.Height))
+            .Distinct()
+            .ToList();
+
+        if (index >= resolutions.Count) return;
+
+        (int width, int height) = resolutions[index];
+
+        if (item.CurrentMode is { } current && current.Width == width && current.Height == height)
+        {
+            return;
+        }
+
+        item.ApplyResolution(width, height);
+
+        // 切换后重新协商需要一点时间，之后刷新列表让刷新率跟上。
+        _ = RefreshMiniModeAsync(item);
+    }
+
+    private void OnMiniRefreshRateChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox { Tag: string id } combo) return;
+        if (!_items.TryGetValue(id, out DisplaySliderItem? item)) return;
+
+        int index = combo.SelectedIndex;
+        if (index < 0 || index >= item.AvailableRefreshRates.Count) return;
+
+        int hz = item.AvailableRefreshRates[index];
+
+        if (item.CurrentMode is { } current && current.RefreshRate == hz) return;
+
+        item.ApplyRefreshRate(hz);
+        _ = RefreshMiniModeAsync(item);
+    }
+
+    private void OnMiniScaleChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox { Tag: string id } combo) return;
+        if (!_items.TryGetValue(id, out DisplaySliderItem? item)) return;
+
+        int index = combo.SelectedIndex;
+        if (index < 0 || index >= DisplayScaleControl.Presets.Length) return;
+
+        int percent = DisplayScaleControl.Presets[index];
+        if (item.ScalePercent == percent) return;
+
+        item.ApplyScale(percent);
+    }
+
+    private async Task RefreshMiniModeAsync(DisplaySliderItem item)
+    {
+        await Task.Delay(1000);
+
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_items.ContainsKey(item.Id)) return;
+            if (DisplayBus.Current.FirstOrDefault(t => t.Id == item.Id) is { } target)
+            {
+                item.RefreshDisplayMode(target);
+            }
+        });
+    }
     private void OnCollapseClick(object sender, RoutedEventArgs e) => CollapseRequested?.Invoke();
 
     private void OnRootPointerPressed(object sender, PointerRoutedEventArgs e)

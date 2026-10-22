@@ -23,6 +23,40 @@
                        Height="20"
                        Source="ms-appx:///Assets/AppIcon.png" />
                 <TextBlock x:Name="TitleText" Text="Windows 视觉改善" FontWeight="SemiBold" />
+
+                <!-- 版本号：低对比度小药丸，不抢标题的视觉重量。 -->
+                <Border VerticalAlignment="Center"
+                        Padding="7,2"
+                        CornerRadius="4"
+                        Background="{ThemeResource ControlFillColorSecondaryBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                    <TextBlock x:Name="AppVersionText"
+                               VerticalAlignment="Center"
+                               FontSize="11"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="v-" />
+                </Border>
+
+                <!-- 有更新时才出现。点击直接下载安装并重启。 -->
+                <Button x:Name="UpdateButton"
+                        Visibility="Collapsed"
+                        Click="OnUpdateBadgeClick"
+                        Padding="10,3"
+                        CornerRadius="4"
+                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                        Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                        BorderThickness="0"
+                        VerticalAlignment="Center"
+                        ToolTipService.ToolTip="发现新版本，点击下载并更新">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon FontSize="13" Glyph="&#xE895;" />
+                        <TextBlock x:Name="UpdateButtonText"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Text="有新版本" />
+                    </StackPanel>
+                </Button>
             </StackPanel>
         </Grid>
 

@@ -475,6 +475,13 @@ public sealed partial class CapabilityPanel : UserControl
         FooterText.Text = hasControls
             ? "调整会立即写入显示器。部分项目需显示器菜单里先启用 DDC/CI。"
             : string.Empty;
+
+        // 让 ItemsControl 在本帧之后展开：ControlRow 的模板要建滑块/下拉框，
+        // 项数多时一次性构建会占用 UI 线程，表现为弹窗出现后卡一下。
+        _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            ControlList.UpdateLayout();
+        });
     }
 
     public void ShowMessage(string title, string message)

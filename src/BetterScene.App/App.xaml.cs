@@ -32,6 +32,9 @@ public partial class App : Application
 
     public static AutoSceneService? AutoScene { get; private set; }
 
+    /// <summary>更新检查调度器。</summary>
+    public static UpdateCoordinator? Updates { get; private set; }
+
     public static OsdWindow? Osd { get; private set; }
 
     public App()
@@ -72,6 +75,7 @@ public partial class App : Application
         StartDisplays();
         StartInput();
         StartAutoScene();
+        StartUpdates();
 
         BrightnessHub.Changed += OnBrightnessChanged;
 
@@ -80,6 +84,9 @@ public partial class App : Application
     }
 
     public DispatcherQueue UiQueue { get; } = DispatcherQueue.GetForCurrentThread();
+
+    /// <summary>供静态方法/后台服务使用的 UI 队列。</summary>
+    public static DispatcherQueue? Ui => Current.UiQueue;
 
     private void StartDisplays()
     {
@@ -121,6 +128,20 @@ public partial class App : Application
 
         AutoScene.Start();
         if (Settings.AutoScene) ThemeWatch.Start();
+    }
+
+    /// <summary>
+    /// 启动更新调度。真正的检查时机由 <see cref="UpdateCoordinator"/> 按设置决定：
+    /// 启动时检查一次、之后按设定间隔轮询。
+    /// </summary>
+    private void StartUpdates()
+    {
+        Updates = new UpdateCoordinator();
+
+        Updates.UpdateAvailable += info => Main?.NotifyUpdateAvailable(info);
+        Updates.AutoInstallStarting += info => Main?.NotifyAutoUpdateStarting(info);
+
+        Updates.Start();
     }
 
     public static void ApplyAutoSceneSetting()
@@ -267,6 +288,7 @@ public partial class App : Application
     {
         try
         {
+            Log.Info($"osd present: display={change.DisplayId} level={change.Level}");
             Osd ??= new OsdWindow();
 
             // OSD 上正在拖动进度条时，它自己就是亮度变化的发起者。
@@ -330,6 +352,8 @@ public partial class App : Application
         ThemeWatch = null;
         AutoScene?.Dispose();
         AutoScene = null;
+        Updates?.Dispose();
+        Updates = null;
         Osd?.DisposeWindow();
         Osd = null;
 

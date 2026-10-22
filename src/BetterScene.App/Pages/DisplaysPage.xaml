@@ -34,8 +34,12 @@
                     </TransitionCollection>
                 </StackPanel.ChildrenTransitions>
 
-                <ItemsControl x:Name="DisplayList">
-                    <ItemsControl.ItemTemplate>
+                <InfoBar x:Name="InlineInfoBar"
+                         IsOpen="False"
+                         IsClosable="True"
+                         Severity="Informational" />
+
+                <ItemsControl x:Name="DisplayList">                    <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="services:DisplaySliderItem">
                             <tk:SettingsExpander Header="{x:Bind Title, Mode=OneWay}"
                                                  Description="{x:Bind HardwareSummary, Mode=OneWay}"
@@ -66,6 +70,58 @@
                                     <tk:SettingsCard Header="控制项探测">
                                         <Button Content="探测能力"
                                                 Click="OnProbeCapabilities"
+                                                Tag="{x:Bind Id}" />
+                                    </tk:SettingsCard>
+
+                                    <!-- HDR。不支持的显示器整行隐藏。 -->
+                                    <tk:SettingsCard Header="HDR"
+                                                     Description="{x:Bind HdrSummary, Mode=OneWay}"
+                                                     Visibility="{x:Bind HdrVisibility, Mode=OneWay}">
+                                        <ToggleSwitch IsOn="{x:Bind HdrEnabled, Mode=OneWay}"
+                                                      IsEnabled="{x:Bind HdrToggleEnabled, Mode=OneWay}"
+                                                      Toggled="OnHdrToggled"
+                                                      Tag="{x:Bind Id}" />
+                                    </tk:SettingsCard>
+
+                                    <!-- 分辨率。切换后刷新率会尽量保留当前值。 -->
+                                    <tk:SettingsCard Header="分辨率"
+                                                     Visibility="{x:Bind ModeVisibility, Mode=OneWay}">
+                                        <ComboBox ItemsSource="{x:Bind ResolutionLabels, Mode=OneWay}"
+                                                  SelectedIndex="{x:Bind ResolutionIndex, Mode=OneWay}"
+                                                  MinWidth="160"
+                                                  SelectionChanged="OnResolutionChanged"
+                                                  Tag="{x:Bind Id}" />
+                                    </tk:SettingsCard>
+
+                                    <!-- 刷新率。选项随分辨率变化。 -->
+                                    <tk:SettingsCard Header="刷新率"
+                                                     Visibility="{x:Bind ModeVisibility, Mode=OneWay}">
+                                        <ComboBox ItemsSource="{x:Bind RefreshRateLabels, Mode=OneWay}"
+                                                  SelectedIndex="{x:Bind RefreshRateIndex, Mode=OneWay}"
+                                                  MinWidth="160"
+                                                  SelectionChanged="OnRefreshRateChanged"
+                                                  Tag="{x:Bind Id}" />
+                                    </tk:SettingsCard>
+
+                                    <!-- 缩放。写注册表，需要重新登录才生效。 -->
+                                    <tk:SettingsCard Header="缩放"
+                                                     Description="修改后需要重新登录 Windows 才会完全生效。"
+                                                     Visibility="{x:Bind ScaleVisibility, Mode=OneWay}">
+                                        <ComboBox ItemsSource="{x:Bind ScaleLabels, Mode=OneWay}"
+                                                  SelectedIndex="{x:Bind ScaleIndex, Mode=OneWay}"
+                                                  MinWidth="160"
+                                                  SelectionChanged="OnScaleChanged"
+                                                  Tag="{x:Bind Id}" />
+                                    </tk:SettingsCard>
+
+                                    <!-- 这台显示器在迷你面板里显示哪些项。
+                                         用按钮 + 弹窗，而不是把勾选列表直接铺在卡片里：
+                                         项数不确定（DC 项 + HDR/分辨率/刷新率/缩放），
+                                         平铺会把卡片撑得很长，把下面的亮度范围挤走。 -->
+                                    <tk:SettingsCard Header="迷你面板控制项"
+                                                     Description="选择这台显示器在迷你面板里显示哪些项。">
+                                        <Button Content="配置…"
+                                                Click="OnConfigureMiniControls"
                                                 Tag="{x:Bind Id}" />
                                     </tk:SettingsCard>
 

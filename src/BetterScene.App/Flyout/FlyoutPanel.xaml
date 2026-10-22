@@ -228,10 +228,8 @@
                                                Text="亮度" />
                                 </Grid>
 
-                                <!-- 扩展控制项：对比度 / 音量 / 色温（按设置勾选显示）。
-                                     用 SpacedStackPanel：折叠时不留间距，展开时才产生间隔。 -->
-                                <ItemsControl ItemsSource="{x:Bind MiniExtras}"
-                                              Visibility="{x:Bind MiniExtrasVisibility, Mode=OneWay}">
+                                <ItemsControl ItemsSource="{x:Bind MiniSliders}"
+                                              Visibility="{x:Bind MiniSlidersVisibility, Mode=OneWay}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <controls:SpacedStackPanel Spacing="8" />
@@ -239,7 +237,169 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="controls:ControlRow">
-                                            <!-- Loaded 时把下拉框状态接入面板的自动收起抑制。 -->
+                                            <controls:ControlRowView Row="{x:Bind}"
+                                                                     Loaded="OnControlRowViewLoaded" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- 分辨率 -->
+                                <Grid ColumnSpacing="8"
+                                      Visibility="{x:Bind MiniResolutionVisibility, Mode=OneWay}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="20" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <FontIcon Grid.Column="0"
+                                              VerticalAlignment="Center"
+                                              FontSize="14"
+                                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                              Glyph="&#xE7F8;" />
+
+                                    <ComboBox Grid.Column="1"
+                                              HorizontalAlignment="Stretch"
+                                              MinHeight="0"
+                                              Padding="8,3"
+                                              ItemsSource="{x:Bind ResolutionLabels, Mode=OneWay}"
+                                              SelectedIndex="{x:Bind ResolutionIndex, Mode=OneWay}"
+                                              SelectionChanged="OnMiniResolutionChanged"
+                                              Tag="{x:Bind Id}" />
+
+                                    <TextBlock Grid.Column="2"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Center"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="分辨率" />
+                                </Grid>
+
+                                <!-- 刷新率 -->
+                                <Grid ColumnSpacing="8"
+                                      Visibility="{x:Bind MiniRefreshRateVisibility, Mode=OneWay}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="20" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <FontIcon Grid.Column="0"
+                                              VerticalAlignment="Center"
+                                              FontSize="14"
+                                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                              Glyph="&#xE916;" />
+
+                                    <ComboBox Grid.Column="1"
+                                              HorizontalAlignment="Stretch"
+                                              MinHeight="0"
+                                              Padding="8,3"
+                                              ItemsSource="{x:Bind RefreshRateLabels, Mode=OneWay}"
+                                              SelectedIndex="{x:Bind RefreshRateIndex, Mode=OneWay}"
+                                              SelectionChanged="OnMiniRefreshRateChanged"
+                                              Tag="{x:Bind Id}" />
+
+                                    <TextBlock Grid.Column="2"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Center"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="刷新率" />
+                                </Grid>
+
+                                <!-- 缩放 -->
+                                <Grid ColumnSpacing="8"
+                                      Visibility="{x:Bind MiniScaleVisibility, Mode=OneWay}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="20" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <FontIcon Grid.Column="0"
+                                              VerticalAlignment="Center"
+                                              FontSize="14"
+                                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                              Glyph="&#xE9A6;" />
+
+                                    <ComboBox Grid.Column="1"
+                                              HorizontalAlignment="Stretch"
+                                              MinHeight="0"
+                                              Padding="8,3"
+                                              ItemsSource="{x:Bind ScaleLabels, Mode=OneWay}"
+                                              SelectedIndex="{x:Bind ScaleIndex, Mode=OneWay}"
+                                              SelectionChanged="OnMiniScaleChanged"
+                                              Tag="{x:Bind Id}" />
+
+                                    <TextBlock Grid.Column="2"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Center"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="缩放" />
+                                </Grid>
+
+                                <ItemsControl ItemsSource="{x:Bind MiniChoices}"
+                                              Visibility="{x:Bind MiniChoicesVisibility, Mode=OneWay}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <controls:SpacedStackPanel Spacing="8" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="controls:ControlRow">
+                                            <controls:ControlRowView Row="{x:Bind}"
+                                                                     Loaded="OnControlRowViewLoaded" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- HDR。不支持的显示器整行隐藏。
+                                     用 ToggleButton 而不是 ToggleSwitch：面板里行高紧张，
+                                     开关控件自带的内边距会把一行撑得比其它行高。 -->
+                                <Grid ColumnSpacing="8"
+                                      Visibility="{x:Bind MiniHdrVisibility, Mode=OneWay}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="20" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="52" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <FontIcon Grid.Column="0"
+                                              VerticalAlignment="Center"
+                                              FontSize="14"
+                                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                              Glyph="&#xE7F4;" />
+
+                                    <ToggleButton Grid.Column="1"
+                                                  HorizontalAlignment="Stretch"
+                                                  HorizontalContentAlignment="Center"
+                                                  MinHeight="0"
+                                                  Padding="8,3"
+                                                  CornerRadius="4"
+                                                  IsChecked="{x:Bind HdrEnabled, Mode=OneWay}"
+                                                  IsEnabled="{x:Bind HdrToggleEnabled, Mode=OneWay}"
+                                                  Click="OnMiniHdrClick"
+                                                  Tag="{x:Bind Id}"
+                                                  Content="HDR" />
+
+                                    <TextBlock Grid.Column="2"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Center"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="HDR" />
+                                </Grid>
+
+                                <ItemsControl ItemsSource="{x:Bind MiniActions}"
+                                              Visibility="{x:Bind MiniActionsVisibility, Mode=OneWay}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <controls:SpacedStackPanel Spacing="8" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="controls:ControlRow">
                                             <controls:ControlRowView Row="{x:Bind}"
                                                                      Loaded="OnControlRowViewLoaded" />
                                         </DataTemplate>

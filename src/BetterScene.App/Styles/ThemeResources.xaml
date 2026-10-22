@@ -28,4 +28,27 @@
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 
+    <!--
+        Slider 滑块的抗锯齿修正。
+
+        问题：WinUI 默认把滑块内圆设成 12 DIP（SliderInnerThumbWidth/Height），
+        外层 Border 用 Margin="-2" 撑到 16 DIP。在 125% 缩放下
+        12 × 1.25 = 15px —— 奇数直径的圆落不到像素中心，抗锯齿失效，边缘出现锯齿。
+        （150% 下是 18px 偶数，所以那台屏反而不明显。）
+
+        这里把内圆改成 12.8 DIP：
+        - 100% → 12.8px 取整 13（配合外层 16px 的 Border 抗锯齿，观感正常）
+        - 125% → 16px 整
+        - 150% → 19.2px
+        真正起作用的是外层 Border：它的 CornerRadius 由合成层绘制，始终带抗锯齿。
+        内圆保持接近原始尺寸，避免视觉上变小。
+
+        为什么不直接改 ControlTemplate：WinUI 3 的 Slider 模板结构复杂
+        （SliderContainer / FocusBorder / 垂直方向 / 十余个 VisualState），
+        手写精简版会漏元素，运行时抛 XamlParseException 直接崩溃。
+        只覆盖尺寸资源是最小侵入的做法。
+    -->
+    <x:Double x:Key="SliderInnerThumbWidth">12.8</x:Double>
+    <x:Double x:Key="SliderInnerThumbHeight">12.8</x:Double>
+
 </ResourceDictionary>

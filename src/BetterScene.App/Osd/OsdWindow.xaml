@@ -51,7 +51,7 @@
                 <!-- 百分比。固定宽度避免数字位数变化时进度条左右跳动。 -->
                 <TextBlock x:Name="PercentText"
                            Grid.Column="2"
-                           Width="26"
+                           MinWidth="34"
                            TextAlignment="Right"
                            VerticalAlignment="Center"
                            FontSize="12"

@@ -2,7 +2,14 @@ using System.Runtime.InteropServices;
 
 namespace BetterScene.Core.Displays;
 
-internal static class GammaBrightness
+/// <summary>
+/// 用 gamma ramp 调亮度（软件调光）。
+///
+/// 既是「无 DDC 能力」时的兜底，也是 HDR 模式下的唯一可用通道：
+/// HDR 开启后显示器会锁死背光（DDC 0x10 写入被静默忽略），
+/// 而 CCD 的 SDR white level 只有 GET 没有 SET，所以只能改 gamma。
+/// </summary>
+public static class GammaBrightness
 {
     private const int MinimumBrightness = 20;
     private const double MinimumDriverScale = 70.0;

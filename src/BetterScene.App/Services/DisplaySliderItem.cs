@@ -77,6 +77,128 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     public Visibility SizeVisibility =>
         SizeText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
+    // ---- HDR ----
+
+    /// <summary>当前 HDR 状态。</summary>
+    public HdrState Hdr { get; private set; } = HdrState.Unknown;
+
+    /// <summary>HDR 行是否可见（显示器页：支持就显示）。</summary>
+    public Visibility HdrVisibility =>
+        Hdr.IsSupported ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>mini 面板里是否显示某项（按这台显示器自己的配置判断）。</summary>
+    private bool MiniShows(string name) => MiniControlsOf(Id).Contains(name);
+
+    /// <summary>mini 面板里的 HDR 行。</summary>
+    public Visibility MiniHdrVisibility =>
+        Hdr.IsSupported && MiniShows(MiniNames.Hdr) ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool HdrEnabled => Hdr.IsEnabled;
+
+    public bool HdrToggleEnabled => Hdr.CanToggle;
+
+    /// <summary>HDR 状态说明，例如「8 bit · RGB」或不可用原因。</summary>
+    public string HdrSummary
+    {
+        get
+        {
+            if (!Hdr.IsSupported) return "此显示器不支持 HDR";
+
+            string encoding = Hdr.ColorEncoding.Length > 0 ? $" · {Hdr.ColorEncoding}" : string.Empty;
+            string depth = Hdr.BitsPerColorChannel > 0 ? $"{Hdr.BitsPerColorChannel} bit" : string.Empty;
+            string detail = $"{depth}{encoding}".TrimStart(' ', '·');
+
+            if (!Hdr.CanToggle) return Hdr.BlockedReason;
+
+            return detail.Length > 0
+                ? $"{detail} · {(Hdr.IsEnabled ? "已开启" : "已关闭")}"
+                : (Hdr.IsEnabled ? "已开启" : "已关闭");
+        }
+    }
+
+    // ---- 分辨率 / 刷新率 / 缩放 ----
+
+    /// <summary>当前显示模式。</summary>
+    public CurrentDisplayMode? CurrentMode { get; private set; }
+
+    /// <summary>该显示器支持的分辨率档位。</summary>
+    public List<DisplayMode> AvailableModes { get; private set; } = new();
+
+    /// <summary>当前分辨率下的可用刷新率。</summary>
+    public List<int> AvailableRefreshRates { get; private set; } = new();
+
+    /// <summary>分辨率下拉框的选项文字。</summary>
+    public List<string> ResolutionLabels =>
+        AvailableModes.Select(m => m.ResolutionText).Distinct().ToList();
+
+    /// <summary>刷新率下拉框的选项文字。</summary>
+    public List<string> RefreshRateLabels =>
+        AvailableRefreshRates.Select(hz => $"{hz} Hz").ToList();
+
+    /// <summary>当前缩放百分比。</summary>
+    public int? ScalePercent { get; private set; }
+
+    /// <summary>缩放档位文字。</summary>
+    public List<string> ScaleLabels => DisplayScaleControl.Presets.Select(p => $"{p}%").ToList();
+
+    /// <summary>显示模式行是否可见（取不到模式列表时隐藏）。</summary>
+    public Visibility ModeVisibility =>
+        AvailableModes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>mini 面板里的分辨率行。</summary>
+    public Visibility MiniResolutionVisibility =>
+        AvailableModes.Count > 0 && MiniShows(MiniNames.Resolution)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>mini 面板里的刷新率行。</summary>
+    public Visibility MiniRefreshRateVisibility =>
+        AvailableModes.Count > 0 && MiniShows(MiniNames.RefreshRate)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>缩放行是否可见。</summary>
+    public Visibility ScaleVisibility =>
+        ScalePercent is not null ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>mini 面板里的缩放行。</summary>
+    public Visibility MiniScaleVisibility =>
+        ScalePercent is not null && MiniShows(MiniNames.Scale)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>分辨率下拉框的当前索引。</summary>
+    public int ResolutionIndex
+    {
+        get
+        {
+            if (CurrentMode is null) return -1;
+
+            string current = $"{CurrentMode.Width} × {CurrentMode.Height}";
+            return ResolutionLabels.IndexOf(current);
+        }
+    }
+
+    /// <summary>刷新率下拉框的当前索引。</summary>
+    public int RefreshRateIndex
+    {
+        get
+        {
+            if (CurrentMode is null) return -1;
+            return AvailableRefreshRates.IndexOf(CurrentMode.RefreshRate);
+        }
+    }
+
+    /// <summary>缩放下拉框的当前索引。</summary>
+    public int ScaleIndex
+    {
+        get
+        {
+            if (ScalePercent is not { } percent) return -1;
+            return Array.IndexOf(DisplayScaleControl.Presets, percent);
+        }
+    }
+
     /// <summary>
     /// 卡片当前是否收起（关联模式切换时用）。
     ///
@@ -105,12 +227,23 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     /// <summary>该显示器的扩展控制项（对比度、音量、色彩预设…）。</summary>
     public ObservableCollection<ControlRow> Extras { get; } = new();
 
-    /// <summary>mini 面板要展示的控制项（按设置过滤后）。</summary>
-    public ObservableCollection<ControlRow> MiniExtras { get; } = new();
+    /// <summary>mini 面板里的滑块型控制项。</summary>
+    public ObservableCollection<ControlRow> MiniSliders { get; } = new();
 
-    /// <summary>mini 面板里是否有扩展项可显示。</summary>
-    public Visibility MiniExtrasVisibility =>
-        MiniExtras.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    /// <summary>mini 面板里的下拉框型控制项。</summary>
+    public ObservableCollection<ControlRow> MiniChoices { get; } = new();
+
+    /// <summary>mini 面板里的按钮型控制项（电源模式等）。</summary>
+    public ObservableCollection<ControlRow> MiniActions { get; } = new();
+
+    public Visibility MiniSlidersVisibility =>
+        MiniSliders.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility MiniChoicesVisibility =>
+        MiniChoices.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility MiniActionsVisibility =>
+        MiniActions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>是否有扩展控制项可展示。</summary>
     public Visibility ExtrasVisibility => Extras.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -265,6 +398,17 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         HardwareSummary = BuildHardwareSummary(target);
         RawSummary = BuildRawSummary(target);
 
+        // 保存一份引用，后续切换分辨率/HDR 时要用它定位物理输出。
+        _target = target;
+
+        RefreshDisplayMode(target);
+        RefreshHdr(target);
+        RefreshScale(target);
+
+        Log.Info($"display rows: {target.Model} gdi={target.GdiName} " +
+                 $"hdr={Hdr.IsSupported} modes={AvailableModes.Count} scale={ScalePercent?.ToString() ?? "null"} " +
+                 $"miniHdr={MiniHdrVisibility} miniRes={MiniResolutionVisibility} " +
+                 $"miniHz={MiniRefreshRateVisibility} miniScale={MiniScaleVisibility}");
         // 标题行右侧的尺寸。
         double inches = ScreenInches(target);
         SizeText = inches > 0 ? $"{inches:0.#} 英寸" : string.Empty;
@@ -277,7 +421,6 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     private static string BuildHardwareSummary(DisplayTarget target)
     {
         var parts = new List<string>(4);
-
         if (!string.IsNullOrWhiteSpace(target.Connection)) parts.Add(target.Connection);
         if (target.Width > 0 && target.Height > 0) parts.Add($"{target.Width}×{target.Height}");
         if (target.RefreshRate > 0) parts.Add($"{target.RefreshRate}Hz");
@@ -312,6 +455,161 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         double diagonalCm = Math.Sqrt((double)w * w + (double)h * h);
         return diagonalCm / 2.54;
     }
+
+    /// <summary>
+    /// 刷新 HDR 状态。切换 HDR 会重建显示管线，所以这里只读不写。
+    /// </summary>
+    public void RefreshHdr(DisplayTarget target)
+    {
+        Hdr = HdrControl.Read(target);
+
+        OnPropertyChanged(nameof(Hdr));
+        OnPropertyChanged(nameof(HdrVisibility));
+        OnPropertyChanged(nameof(MiniHdrVisibility));
+        OnPropertyChanged(nameof(HdrEnabled));
+        OnPropertyChanged(nameof(HdrToggleEnabled));
+        OnPropertyChanged(nameof(HdrSummary));
+    }
+
+    /// <summary>
+    /// 切换 HDR。
+    ///
+    /// 系统接受请求后管线要 1–2 秒才重建完成，立刻读回会拿到旧值，
+    /// 所以这里延后一段时间再刷新状态。
+    /// </summary>
+    public async Task<bool> ToggleHdrAsync(bool enabled)
+    {
+        if (_target is null) return false;
+
+        bool ok = HdrControl.SetEnabled(_target, enabled);
+        if (!ok) return false;
+
+        // HDR 状态变了，亮度通道也跟着变（背光 ↔ SDR 白点），
+        // 两个缓存都要失效，否则滑块位置和实际亮度会对不上。
+        BrightnessHub.InvalidateHdrCache();
+        BrightnessHub.InvalidateSdrCache();
+
+        // 先乐观更新，避免开关弹回原位造成"没生效"的错觉。
+        Hdr = Hdr with { IsEnabled = enabled };
+        OnPropertyChanged(nameof(HdrEnabled));
+        OnPropertyChanged(nameof(HdrSummary));
+
+        // 等管线重建完成后以真实状态为准。
+        await Task.Delay(1600);
+        RefreshHdr(_target);
+
+        // 管线重建后重新对齐一次亮度显示。
+        OnPropertyChanged(nameof(Level));
+
+        return true;
+    }
+
+    /// <summary>刷新分辨率/刷新率列表与当前值。</summary>
+    public void RefreshDisplayMode(DisplayTarget target)
+    {
+        CurrentMode = DisplayModeControl.Read(target);
+        AvailableModes = DisplayModeControl.Enumerate(target);
+
+        AvailableRefreshRates = CurrentMode is { } mode
+            ? DisplayModeControl.EnumerateRefreshRates(target, mode.Width, mode.Height)
+            : new List<int>();
+
+        OnPropertyChanged(nameof(CurrentMode));
+        OnPropertyChanged(nameof(AvailableModes));
+        OnPropertyChanged(nameof(AvailableRefreshRates));
+        OnPropertyChanged(nameof(ResolutionLabels));
+        OnPropertyChanged(nameof(RefreshRateLabels));
+        OnPropertyChanged(nameof(ModeVisibility));
+        OnPropertyChanged(nameof(MiniResolutionVisibility));
+        OnPropertyChanged(nameof(MiniRefreshRateVisibility));
+        OnPropertyChanged(nameof(ResolutionIndex));
+        OnPropertyChanged(nameof(RefreshRateIndex));
+    }
+
+    /// <summary>
+    /// 切换分辨率。刷新率会尽量保留当前值，不支持时退回该分辨率下最高档。
+    /// </summary>
+    public bool ApplyResolution(int width, int height)
+    {
+        if (_target is null) return false;
+
+        List<int> rates = DisplayModeControl.EnumerateRefreshRates(_target, width, height);
+        if (rates.Count == 0) return false;
+
+        int refresh = CurrentMode is { } current && rates.Contains(current.RefreshRate)
+            ? current.RefreshRate
+            : rates[0];
+
+        return ApplyMode(width, height, refresh);
+    }
+
+    /// <summary>切换刷新率，分辨率保持不变。</summary>
+    public bool ApplyRefreshRate(int refreshRate)
+    {
+        if (_target is null || CurrentMode is not { } current) return false;
+
+        return ApplyMode(current.Width, current.Height, refreshRate);
+    }
+
+    private bool ApplyMode(int width, int height, int refreshRate)
+    {
+        if (_target is null) return false;
+
+        bool ok = DisplayModeControl.Apply(_target, width, height, refreshRate);
+        if (!ok) return false;
+
+        // 切换后显示器会重新协商，稍等一下再读回真实值。
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(900);
+            RefreshDisplayMode(_target);
+        });
+
+        return true;
+    }
+
+    /// <summary>刷新缩放百分比。</summary>
+    public void RefreshScale(DisplayTarget target)
+    {
+        ScalePercent = DisplayScaleControl.Read(target);
+
+        OnPropertyChanged(nameof(ScalePercent));
+        OnPropertyChanged(nameof(ScaleVisibility));
+        OnPropertyChanged(nameof(MiniScaleVisibility));
+        OnPropertyChanged(nameof(ScaleLabels));
+        OnPropertyChanged(nameof(ScaleIndex));
+    }
+
+    /// <summary>
+    /// 设置缩放。返回 true 只代表注册表已写入，
+    /// 实际生效需要用户重新登录——界面必须提示这一点。
+    /// </summary>
+    public bool ApplyScale(int percent)
+    {
+        if (_target is null) return false;
+
+        bool ok = DisplayScaleControl.Apply(_target, percent);
+        if (!ok) return false;
+
+        ScalePercent = percent;
+        OnPropertyChanged(nameof(ScalePercent));
+        OnPropertyChanged(nameof(ScaleIndex));
+
+        return true;
+    }
+
+    /// <summary>重新读取全部扩展状态（HDR / 模式 / 缩放）。</summary>
+    public void RefreshAll(DisplayTarget target)
+    {
+        RefreshHdr(target);
+        RefreshDisplayMode(target);
+        RefreshScale(target);
+
+        Log.Info($"display rows (refresh): {target.Model} " +
+                 $"hdr={Hdr.IsSupported} modes={AvailableModes.Count} scale={ScalePercent?.ToString() ?? "null"}");
+    }
+
+    private DisplayTarget? _target;
 
     public void UpdateGroup(int level, bool canControl)
     {
@@ -354,6 +652,9 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     private DisplayControls? _lastControls;
     private Action<byte, uint>? _extrasWrite;
 
+    /// <summary>最近一次读到的控制项。显示器页据此生成 mini 控制项勾选列表。</summary>
+    public DisplayControls? LastControls => _lastControls;
+
     /// <summary>
     /// 只按当前勾选项重建 mini 面板那部分，不重新探测硬件。
     /// 开关切换要立刻生效，走 DDC 会卡住界面。
@@ -375,24 +676,101 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
         if (_extrasWrite is null) return;
 
-        MiniExtras.Clear();
+        // mini 面板按控件形态分三段排列：滑块 → 下拉框 → 按钮。
+        // 同形态排在一起，扫视时是"三条连续的条 / 三个框 / 两个按钮"，
+        // 比按 VCP 代码穿插着来好认得多。
+        MiniSliders.Clear();
+        MiniChoices.Clear();
+        MiniActions.Clear();
+
         foreach (MonitorControl item in _lastControls.Items)
         {
-            if (IsMiniEnabled(item.Code)) MiniExtras.Add(new ControlRow(item, _extrasWrite));
+            if (!IsMiniEnabled(item.Code)) continue;
+            var row = new ControlRow(item, _extrasWrite);
+
+            switch (item.Kind)
+            {
+                case ControlKind.Slider:
+                    MiniSliders.Add(row);
+                    break;
+                case ControlKind.Choice:
+                    MiniChoices.Add(row);
+                    break;
+                default:
+                    MiniActions.Add(row);
+                    break;
+            }
         }
 
-        OnPropertyChanged(nameof(MiniExtras));
-        OnPropertyChanged(nameof(MiniExtrasVisibility));
+        OnPropertyChanged(nameof(MiniSliders));
+        OnPropertyChanged(nameof(MiniChoices));
+        OnPropertyChanged(nameof(MiniActions));
+        OnPropertyChanged(nameof(MiniSlidersVisibility));
+        OnPropertyChanged(nameof(MiniChoicesVisibility));
+        OnPropertyChanged(nameof(MiniActionsVisibility));
+
+        // HDR / 分辨率 / 刷新率 / 缩放 这四行也在「显示哪些控制项」里，
+        // 但它们的可见性由 MiniHdrVisibility 等属性决定，不经过上面的集合。
+        // 漏掉这几个通知，用户勾选后那几行不会出现或消失。
+        OnPropertyChanged(nameof(MiniHdrVisibility));
+        OnPropertyChanged(nameof(MiniResolutionVisibility));
+        OnPropertyChanged(nameof(MiniRefreshRateVisibility));
+        OnPropertyChanged(nameof(MiniScaleVisibility));
     }
 
-    /// <summary>mini 面板是否启用了某个控制项（按 VCP 代码判断，比名称可靠）。</summary>
-    public static bool IsMiniEnabled(byte code)
+    /// <summary>mini 面板是否启用了某个控制项（按显示器 Id + 控制项名称判断）。</summary>
+    public bool IsMiniEnabled(byte code) => IsMiniEnabled(ControlCatalog.NameOf(code));
+
+    /// <summary>mini 面板是否启用了某个控制项（按名称判断）。</summary>
+    public bool IsMiniEnabled(string name)
     {
-        List<string> saved = App.Settings.MiniPanelControls;
-        if (saved.Contains(ControlCatalog.NameOf(code))) return true;
+        List<string> saved = MiniControlsOf(Id);
+
+        if (saved.Contains(name)) return true;
 
         // 兼容旧配置里改过名的项。
-        return code == ControlCatalog.ColorPreset && saved.Contains("色彩预设");
+        return name == ControlCatalog.NameOf(ControlCatalog.ColorPreset) && saved.Contains("色彩预设");
+    }
+
+    /// <summary>
+    /// 取某台显示器在 mini 面板里启用的控制项。
+    ///
+    /// 首次访问某台显示器时，用旧版的全局勾选做一次迁移，
+    /// 这样老用户升级后不会突然发现面板空了。
+    /// </summary>
+    public static List<string> MiniControlsOf(string displayId)
+    {
+        Dictionary<string, List<string>> map = App.Settings.MiniControlsByDisplay;
+
+        if (map.TryGetValue(displayId, out List<string>? saved)) return saved;
+
+        var migrated = new List<string>(App.Settings.MiniPanelControls);
+
+        // 旧版的四个布尔开关也一并迁进来。
+        if (App.Settings.MiniPanelControls.Count > 0)
+        {
+            // 旧版全局勾选存在，说明用户配置过，直接沿用。
+        }
+
+        map[displayId] = migrated;
+        return migrated;
+    }
+
+    /// <summary>设置某台显示器启用哪些控制项。</summary>
+    public static void SetMiniEnabled(string displayId, string name, bool enabled)
+    {
+        List<string> list = MiniControlsOf(displayId);
+
+        if (enabled)
+        {
+            if (!list.Contains(name)) list.Add(name);
+        }
+        else
+        {
+            list.Remove(name);
+        }
+
+        App.Settings.MiniControlsByDisplay[displayId] = list;
     }
 
     private void ApplyLevel(int level)

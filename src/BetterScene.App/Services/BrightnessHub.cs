@@ -17,8 +17,66 @@ public static class BrightnessHub
     /// </summary>
     private static readonly BrightnessCoalescer Coalescer = new((id, level) =>
     {
-        if (BrightnessHub.RawWriter is { } writer) writer(id, level);
+        // HDR 开启时改走 gamma 校正：
+        //
+        // 实测 HDR 下显示器固件会锁死背光，DDC 0x10 写入返回成功但值不变
+        // （readback 仍是原值）。而 SDR white level 在 CCD API 里只有 GET
+        // （类型 11），没有对应的 SET，改不了。
+        //
+        // gamma ramp 是唯一还能动的通道：SetDeviceGammaRamp 在 HDR 下
+        // 实测有效（写 0.7 后读回 45874 / 65535），用户能直观看到变暗。
+        DisplayTarget? target = Find(id);
+
+        if (target is not null && IsHdrActive(target))
+        {
+            if (GammaBrightness.TrySet(target.GdiName, level, out _))
+            {
+                PrimeSdrCache(id, level);
+                return;
+            }
+
+            // gamma 也失败才退回原通道，至少不会完全失控。
+        }
+
+        if (RawWriter is { } writer) writer(id, level);
     });
+
+    /// <summary>该显示器当前是否处于 HDR 模式（结果缓存 2 秒，避免每次滑块都查一遍）。</summary>
+    private static bool IsHdrActive(DisplayTarget target)
+    {
+        long now = MonoClock.NowMs;
+
+        if (_hdrCacheId == target.Id && MonoClock.Within(_hdrCacheAt, 2000))
+        {
+            return _hdrCacheValue;
+        }
+
+        bool enabled = HdrControl.Read(target).IsEnabled;
+
+        _hdrCacheId = target.Id;
+        _hdrCacheValue = enabled;
+        _hdrCacheAt = now;
+
+        return enabled;
+    }
+
+    private static string? _hdrCacheId;
+    private static bool _hdrCacheValue;
+    private static long _hdrCacheAt = MonoClock.Never;
+
+    /// <summary>HDR 开关变化后调用，让下次读取拿到新状态。</summary>
+    public static void InvalidateHdrCache()
+    {
+        _hdrCacheId = null;
+        _hdrCacheAt = MonoClock.Never;
+    }
+
+    /// <summary>SDR 白点缓存失效（HDR 切换后必须调用）。</summary>
+    public static void InvalidateSdrCache()
+    {
+        _sdrCacheId = null;
+        _sdrCacheAt = MonoClock.Never;
+    }
 
     /// <summary>底层管道写入器，由 DisplayBus 在挂载服务时提供。</summary>
     public static Action<string, int>? RawWriter { get; set; }
@@ -32,10 +90,54 @@ public static class BrightnessHub
     public static DisplayTarget? Find(string? id) =>
         DisplayBus.Current.FirstOrDefault(t => string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
 
-    public static int LevelOf(DisplayTarget target) =>
-        App.Settings.Brightness.TryGetValue(target.Id, out int saved)
+    public static int LevelOf(DisplayTarget target)
+    {
+        // HDR 模式下背光被锁定，记忆里的值对应的是 gamma 曲线，
+        // 直接读系统当前 ramp 才不会和滑块显示脱节。
+        if (IsHdrActive(target) && ReadGammaCached(target) is { } hdrLevel)
+        {
+            return Math.Clamp(hdrLevel, 0, 100);
+        }
+
+        return App.Settings.Brightness.TryGetValue(target.Id, out int saved)
             ? Math.Clamp(saved, 0, 100)
             : Math.Clamp(target.Brightness, 0, 100);
+    }
+
+    /// <summary>
+    /// 缓存 gamma 读数。
+    ///
+    /// LevelOf 在拖动滑块时每帧都会被调用，
+    /// 每次都开 DC 读 ramp 会让拖动明显发涩。
+    /// </summary>
+    private static int? ReadGammaCached(DisplayTarget target)
+    {
+        long now = MonoClock.NowMs;
+
+        if (_sdrCacheId == target.Id && MonoClock.Within(_sdrCacheAt, 800))
+        {
+            return _sdrCacheValue;
+        }
+
+        int value = GammaBrightness.ReadLevel(target.GdiName);
+
+        _sdrCacheId = target.Id;
+        _sdrCacheValue = value;
+        _sdrCacheAt = now;
+
+        return value;
+    }
+
+    private static void PrimeSdrCache(string id, int level)
+    {
+        _sdrCacheId = id;
+        _sdrCacheValue = level;
+        _sdrCacheAt = MonoClock.NowMs;
+    }
+
+    private static string? _sdrCacheId;
+    private static int? _sdrCacheValue;
+    private static long _sdrCacheAt = MonoClock.Never;
 
     public static DisplayTarget? TargetAt(int x, int y) =>
         DisplayBus.Current.FirstOrDefault(t =>
