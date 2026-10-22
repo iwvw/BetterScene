@@ -18,6 +18,15 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <PublishSingleFile>false</PublishSingleFile>
     <EnableMsixTooling>false</EnableMsixTooling>
+
+    <!--
+      WinUI 3 必须有 .pri 资源包才能加载 XAML 资源字典（XamlControlsResources 等）。
+      dotnet publish 默认不跑 PRI 生成目标，产物里缺 .pri，程序一启动就崩在
+      Microsoft.UI.Xaml.dll（0xC000027B）。这两个开关强制 publish 也生成 PRI。
+    -->
+    <EnableDefaultPriItems Condition="'$(EnableDefaultPriItems)' == ''">true</EnableDefaultPriItems>
+    <GeneratePriFile>true</GeneratePriFile>
+    <ShouldComputeInputPris>true</ShouldComputeInputPris>
   </PropertyGroup>
 
   <ItemGroup>
@@ -62,5 +71,38 @@
     <Copy SourceFiles="@(DisplaysWorkerFiles)"
           DestinationFiles="@(DisplaysWorkerFiles->'$(OutDir)worker\%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
+    publish 不走 Build 的 AfterTargets，必须单独挂一次，
+    否则安装包/便携包里完全没有 worker\ 目录，程序启动即崩（0xC000027B）。
+  -->
+  <Target Name="PublishDisplaysWorker" AfterTargets="Publish" DependsOnTargets="BuildDisplaysWorker">
+    <PropertyGroup>
+      <_DisplaysWorkerDir>%(DisplaysWorkerOutputs.RootDir)%(DisplaysWorkerOutputs.Directory)</_DisplaysWorkerDir>
+      <_DisplaysWorkerPublishDir>$(PublishDir)worker\</_DisplaysWorkerPublishDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <DisplaysWorkerPublishFiles Include="$(_DisplaysWorkerDir)*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DisplaysWorkerPublishFiles)"
+          DestinationFiles="@(DisplaysWorkerPublishFiles->'$(_DisplaysWorkerPublishDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
+    WinUI 3 必须有 .pri 才能加载 XAML 资源字典。
+    PRI 只在 Build 阶段生成，publish 不会带上它，产物里缺 .pri 会导致
+    程序启动即崩在 Microsoft.UI.Xaml.dll（0xC000027B）——表现为"双击没反应"。
+    这里显式把 Build 产出的 .pri 复制进发布目录。
+  -->
+  <Target Name="PublishPriFile" AfterTargets="Publish" DependsOnTargets="Build">
+    <ItemGroup>
+      <_PriFiles Include="$(OutDir)*.pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PriFiles)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_PriFiles)' != ''" />
   </Target>
 </Project>
