@@ -56,7 +56,9 @@ jobs:
             $v = pwsh -File build/bump-version.ps1 -Set $explicit
           } elseif ($bump -eq 'none') {
             [xml]$xml = Get-Content -LiteralPath Directory.Build.props
-            $v = $xml.Project.PropertyGroup.VersionPrefix
+            $node = $xml.Project.PropertyGroup.VersionPrefix
+            # [xml] 对无属性的简单元素返回 String，带属性时才是 XmlElement。
+            $v = if ($node -is [string]) { $node } else { $node.InnerText }
           } else {
             $v = pwsh -File build/bump-version.ps1 -Bump $bump
           }
@@ -104,7 +106,9 @@ jobs:
             # tag 推送：从 ref 解析，并校验与 Directory.Build.props 一致。
             $v = $env:GITHUB_REF -replace '^refs/tags/v', ''
             [xml]$xml = Get-Content -LiteralPath Directory.Build.props
-            $declared = $xml.Project.PropertyGroup.VersionPrefix
+            $node = $xml.Project.PropertyGroup.VersionPrefix
+            $declared = if ($node -is [string]) { $node } else { $node.InnerText }
+            $declared = $declared.Trim()
             if ($v -ne $declared) {
               throw "tag v$v 与 Directory.Build.props 的 VersionPrefix=$declared 不一致。"
             }

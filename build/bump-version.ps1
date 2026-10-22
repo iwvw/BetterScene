@@ -32,7 +32,11 @@ $propsPath = Join-Path $repoRoot 'Directory.Build.props'
 [xml]$xml = Get-Content -LiteralPath $propsPath
 $node = $xml.Project.PropertyGroup.VersionPrefix
 if ($null -eq $node) { throw "Directory.Build.props 缺少 VersionPrefix。" }
-$current = $node.InnerText.Trim()
+
+# [xml] 对没有属性的简单元素会直接返回 String，
+# 带 Condition 之类属性时才是 XmlElement（要读 InnerText）。两种都要兼容。
+$current = if ($node -is [string]) { $node } else { $node.InnerText }
+$current = $current.Trim()
 if ($current -notmatch '^\d+\.\d+\.\d+$') { throw "当前版本号格式非法：$current" }
 
 if ($PSCmdlet.ParameterSetName -eq 'Set') {
