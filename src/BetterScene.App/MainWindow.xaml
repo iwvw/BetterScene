@@ -21,7 +21,7 @@
                 <Image x:Name="BrandIcon"
                        Width="20"
                        Height="20"
-                       Source="ms-appx:///Assets/BrandDark.png" />
+                       Source="ms-appx:///Assets/AppIcon.png" />
                 <TextBlock x:Name="TitleText" Text="Windows 视觉改善" FontWeight="SemiBold" />
             </StackPanel>
         </Grid>

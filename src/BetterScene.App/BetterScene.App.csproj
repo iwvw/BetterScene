@@ -47,6 +47,7 @@
 
   <ItemGroup>
     <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\AppIcon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\TrayWhite.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\TrayBlack.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\BrandLight.png" CopyToOutputDirectory="PreserveNewest" />

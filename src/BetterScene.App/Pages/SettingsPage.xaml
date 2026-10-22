@@ -128,7 +128,7 @@
                                 <Image x:Name="AboutIcon"
                                        Width="28"
                                        Height="28"
-                                       Source="ms-appx:///Assets/BrandLight.png" />
+                                       Source="ms-appx:///Assets/AppIcon.png" />
                                 <StackPanel Spacing="2" VerticalAlignment="Center">
                                     <TextBlock x:Name="ProductNameText"
                                                Style="{StaticResource BodyStrongTextBlockStyle}"

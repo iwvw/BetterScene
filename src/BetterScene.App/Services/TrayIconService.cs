@@ -31,7 +31,6 @@ public sealed class TrayIconService
     private TaskbarIcon? _icon;
     private System.Drawing.Icon? _currentIcon;
     private ElementTheme _theme = ElementTheme.Default;
-    private ElementTheme _appliedIconTheme = (ElementTheme)(-1);
 
     public event Action? LeftClicked;
     public event Action? OpenRequested;
@@ -55,6 +54,15 @@ public sealed class TrayIconService
         }
     }
 
+    /// <summary>退出时解掉主题广播订阅，避免静态事件持有已销毁的实例。</summary>
+    public void Dispose()
+    {
+        StopThemeSubscription();
+
+        _currentIcon?.Dispose();
+        _currentIcon = null;
+    }
+
     public void ApplyTheme(ElementTheme theme)
     {
         _theme = theme;
@@ -63,26 +71,33 @@ public sealed class TrayIconService
         _icon.RequestedTheme = theme;
         _icon.ContextMenuThemeMode = ToMenuThemeMode(theme);
 
-        // 图标跟随任务栏背景色，而不是应用自身的明暗。
-        ApplyIconForTaskbar();
-        ScheduleIconRefresh();
+        // 注意：这里不碰图标本身。
+        // 托盘图标是贴在任务栏上的，只该跟随任务栏明暗，
+        // 而任务栏明暗只由场景切换决定（见 ThemeSwitcher.Applied 订阅）。
     }
 
     /// <summary>
-    /// 任务栏背景是否为深色。窗口图标与托盘图标都贴在任务栏上，需要按它选反色图标。
+    /// 由主题切换广播驱动，落地对应的托盘图标。
+    ///
+    /// 之所以只订阅、不探测：场景切换是我们自己发起的，
+    /// 写完注册表并广播的这一刻结果就是确定的。
+    /// 之前靠「读注册表 / 采样任务栏像素」去发现，两条路都有延迟，
+    /// 会在正确值之间反复横跳（任务栏还没重绘完就先读到了旧值）。
     /// </summary>
-    public static bool IsTaskbarDark()
+    private void OnThemeApplied(SystemTheme theme)
     {
-        try
+        bool dark = theme == SystemTheme.Dark;
+
+        // 广播在主题应用线程上触发，图标必须在 UI 线程落地。
+        // 这里不能用 GetForCurrentThread()——那是主题线程，拿到的队列是 null。
+        var queue = _uiQueue;
+        if (queue is null || queue.HasThreadAccess)
         {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-            return key?.GetValue("SystemUsesLightTheme") is int value && value == 0;
+            ApplyIconFor(dark);
+            return;
         }
-        catch
-        {
-            return true;
-        }
+
+        queue.TryEnqueue(() => ApplyIconFor(dark));
     }
 
     /// <summary>
@@ -100,34 +115,27 @@ public sealed class TrayIconService
     /// </summary>
     public event Action<bool>? TaskbarThemeChanged;
 
-    /// <summary>
-    /// 托盘图标是位图，不会跟随 RequestedTheme 自动反色。
-    /// 深色任务栏配亮色图标、浅色任务栏配暗色图标，避免与任务栏背景同色看不清。
-    /// 注意：必须走 UpdateIcon(Icon)，它才会真正把新图标推给外壳；
-    /// IconSource 与 Icon 属性都只在创建时生效，之后改不会通知任务栏重绘。
-    /// </summary>
-    private void ApplyIconForTaskbar()
+    /// <summary>按给定背景明暗落地图标。</summary>
+    private void ApplyIconFor(bool dark)
     {
         if (_icon is null) return;
-
-        ElementTheme effective = IsTaskbarDark() ? ElementTheme.Dark : ElementTheme.Light;
-        if (_appliedIconTheme == effective) return;
+        if (_appliedDark == dark && _currentIcon is not null) return;
 
         try
         {
-            string path = ResolveTaskbarIconPath(effective == ElementTheme.Dark);
+            string path = ResolveTaskbarIconPath(dark);
 
             System.Drawing.Icon next = File.Exists(path)
-                ? new System.Drawing.Icon(path)
-                : LoadEmbeddedIcon(effective);
+                ? LoadIconAtTraySize(path)
+                : LoadEmbeddedIcon(dark);
 
             _icon.UpdateIcon(next);
             _currentIcon?.Dispose();
             _currentIcon = next;
-            _appliedIconTheme = effective;
+            _appliedDark = dark;
 
-            Log.Info($"tray icon -> {Path.GetFileName(path)} (taskbar dark={effective == ElementTheme.Dark})");
-            TaskbarThemeChanged?.Invoke(effective == ElementTheme.Dark);
+            Log.Info($"tray icon -> {Path.GetFileName(path)} (taskbar dark={dark})");
+            TaskbarThemeChanged?.Invoke(dark);
         }
         catch (Exception ex)
         {
@@ -135,9 +143,47 @@ public sealed class TrayIconService
         }
     }
 
-    private static System.Drawing.Icon LoadEmbeddedIcon(ElementTheme theme)
+    /// <summary>
+    /// 上次实际用过的图标背景。
+    /// 用 bool? 而不是 ElementTheme：null 明确表示"还没设过"，
+    /// 不会和 Dark/Light 的默认值混淆。
+    /// </summary>
+    private bool? _appliedDark;
+
+    /// <summary>
+    /// 按托盘实际渲染尺寸取图标。
+    ///
+    /// 托盘图标按 SM_CXSMICON 渲染，100% 缩放时是 16px、150% 时是 24px。
+    /// 之前这里固定传 16，在 150% 的机器上系统会把 16px 图放大到 24px ——
+    /// 那才是"图标模糊"的真正原因，不是源图不够细。
+    ///
+    /// ico 里 16/20/24 三档都是从原素材按各自尺寸单独缩放的，
+    /// 所以只要取对尺寸，小图标就是原生的清晰度。
+    /// </summary>
+    private static System.Drawing.Icon LoadIconAtTraySize(string path)
     {
-        string name = theme == ElementTheme.Dark ? WhiteTrayIconFile : BlackTrayIconFile;
+        // 本进程是 per-monitor DPI aware，GetSystemMetrics 已经按当前 DPI 换算过。
+        int size = GetSystemMetrics(SM_CXSMICON);
+        if (size <= 0) size = 16;
+
+        try
+        {
+            return new System.Drawing.Icon(path, size, size);
+        }
+        catch
+        {
+            return new System.Drawing.Icon(path);
+        }
+    }
+
+    private const int SM_CXSMICON = 49;
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    private static System.Drawing.Icon LoadEmbeddedIcon(bool dark)
+    {
+        string name = dark ? WhiteTrayIconFile : BlackTrayIconFile;
         var asm = typeof(TrayIconService).Assembly;
 
         foreach (string candidate in asm.GetManifestResourceNames())
@@ -156,43 +202,74 @@ public sealed class TrayIconService
     }
 
     /// <summary>
-    /// 场景切换时 SystemUsesLightTheme 是异步写入的，立刻读可能还是旧值。
-    /// 这里在稍后再校正两次，确保图标最终与任务栏背景一致。
+    /// 订阅系统明暗变化的广播。
+    ///
+    /// 托盘图标只认这一条来源：我们自己写注册表、自己广播，结果在那一刻就是确定的。
+    /// 不再轮询注册表，也不采样任务栏像素——两者都有延迟，
+    /// 会在「已经切好了」和「还没生效」之间读出中间态，表现为图标反复横跳。
     /// </summary>
-    private void ScheduleIconRefresh()
+    private void StartThemeSubscription()
     {
-        var queue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
-        if (queue is null) return;
+        if (_subscribed) return;
+        _subscribed = true;
 
-        foreach (int delay in IconRefreshDelays)
-        {
-            var timer = queue.CreateTimer();
-            timer.Interval = TimeSpan.FromMilliseconds(delay);
-            timer.IsRepeating = false;
-            timer.Tick += (t, _) =>
-            {
-                t.Stop();
-                ApplyIconForTaskbar();
-            };
-            timer.Start();
-        }
+        // 记下 UI 线程的队列：主题广播来自 ThemeSwitcher 的后台线程，
+        // 那里 GetForCurrentThread() 拿不到我们的队列。
+        _uiQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+
+        ThemeSwitcher.Applied += OnThemeApplied;
+
+        // 启动时没有广播，先按当前实际值落地一次。
+        // 这是唯一需要读注册表的地方。
+        _appliedDark = null;
+        ApplyIconFor(ThemeSwitcher.IsTaskbarDark);
+
+        StartReconcileTimer();
+    }
+
+    private void StopThemeSubscription()
+    {
+        if (!_subscribed) return;
+        _subscribed = false;
+
+        ThemeSwitcher.Applied -= OnThemeApplied;
+
+        _reconcileTimer?.Stop();
+        _reconcileTimer = null;
     }
 
     /// <summary>
-    /// 用户直接在系统设置里切换任务栏明暗时不会有任何通知，
-    /// 用一个低频轮询兜底（只读一个注册表值）。
+    /// 低频兜底：只在「用户绕过本程序、直接改 Windows 设置」时才会用到。
+    ///
+    /// 它不会和 <see cref="OnThemeApplied"/> 打架——主路径不会提前改图标，
+    /// 所以这里的读数和已应用值天然一致。之前反复横跳，
+    /// 是因为旧代码在写注册表前 900ms 就先把图标切成了目标值，
+    /// 轮询又读到尚未写入的旧值，于是来回覆盖。
     /// </summary>
-    private void StartTaskbarWatch()
+    private void StartReconcileTimer()
     {
         var queue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
         if (queue is null) return;
 
         var timer = queue.CreateTimer();
-        timer.Interval = TimeSpan.FromSeconds(5);
+        timer.Interval = TimeSpan.FromSeconds(10);
         timer.IsRepeating = true;
-        timer.Tick += (_, _) => ApplyIconForTaskbar();
+        timer.Tick += (_, _) =>
+        {
+            bool dark = ThemeSwitcher.IsTaskbarDark;
+            if (_appliedDark == dark) return;
+
+            Log.Info($"tray icon reconciled to external taskbar change (dark={dark})");
+            ApplyIconFor(dark);
+        };
         timer.Start();
-    }    private static readonly int[] IconRefreshDelays = { 250, 1200 };
+
+        _reconcileTimer = timer;
+    }
+
+    private bool _subscribed;
+    private Microsoft.UI.Dispatching.DispatcherQueue? _uiQueue;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _reconcileTimer;
 
     public void UpdateState(TrayState state, string text)
     {
@@ -331,10 +408,8 @@ public sealed class TrayIconService
         icon.ForceCreate(enablesEfficiencyMode: false);
         _icon = icon;
 
-        // 创建之后按实际任务栏明暗落地一次图标。
-        _appliedIconTheme = (ElementTheme)(-1);
-        ApplyIconForTaskbar();
-        StartTaskbarWatch();
+        // 创建之后按当前任务栏明暗落地一次图标，并订阅后续的主题广播。
+        StartThemeSubscription();
 
         try
         {

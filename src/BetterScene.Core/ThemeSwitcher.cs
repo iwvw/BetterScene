@@ -85,6 +85,52 @@ public static class ThemeSwitcher
         }
     }
 
+    /// <summary>
+    /// 系统明暗被我们改写并广播完成之后触发，参数是新的主题。
+    ///
+    /// 贴在任务栏上的东西（托盘图标）订阅这里就够了：
+    /// 是程序自己写的注册表，所以这一刻的结果是确定的，
+    /// 不需要再去轮询注册表或采样任务栏像素——那两条路都有延迟，
+    /// 只会让图标在正确值之间来回跳。
+    ///
+    /// 注意：在主题应用线程上触发，订阅方自己负责切回 UI 线程。
+    /// </summary>
+    public static event Action<SystemTheme>? Applied;
+
+    private static void NotifyApplied(SystemTheme theme)
+    {
+        try
+        {
+            Applied?.Invoke(theme);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"theme applied handler failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 任务栏当前是不是深色（<c>SystemUsesLightTheme</c> = 0）。
+    ///
+    /// 只用于启动时取一次初值。运行期的明暗变化由我们自己推送，
+    /// 不再靠反复读这个键去猜——写和渲染之间有延迟，猜出来的值会来回跳。
+    /// </summary>
+    public static bool IsTaskbarDark
+    {
+        get
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(PersonalizeKey);
+                return key?.GetValue("SystemUsesLightTheme") is int value && value == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
     public static bool IsSupported
     {
         get
@@ -246,6 +292,13 @@ public static class ThemeSwitcher
             Log.Info($"system theme broadcast retried ({(ok ? "ok" : "failed")})");
         }
 
+        // 广播已发完，任务栏明暗此刻就是 request.Theme。
+        // 立刻通知订阅方（托盘图标），不要等到主题文件应用完——
+        // 那一步要写壁纸和强调色，可能耗时数秒，图标会明显滞后。
+        // 后面 ThemeFileService 里的 EnsurePersonalize 用的也是 request.Theme，
+        // 不会把结果改成别的值。
+        NotifyApplied(request.Theme);
+
         if (!string.IsNullOrWhiteSpace(request.ThemeFile))
         {
             ThemeApplyResult result = ThemeFileService.Apply(request.ThemeFile!, request.Theme);
@@ -305,6 +358,8 @@ public static class ThemeSwitcher
 
             bool ok = Broadcast();
             Log.Info($"system theme set to {theme} (broadcast={(ok ? "ok" : "failed")})");
+
+            NotifyApplied(theme);
             return ok;
         }
         catch (Exception ex)

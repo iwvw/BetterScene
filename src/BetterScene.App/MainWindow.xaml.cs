@@ -30,9 +30,6 @@ public sealed partial class MainWindow : Window
     /// 不能直接用 bool：它的默认值 false 会和「任务栏是浅色」撞车，
     /// 首次启动若正好是浅色任务栏，幂等判断会把设置整个跳过，
     /// 表现就是应用栏图标和 Alt+Tab 预览里都是错的，要切一次主题才正常。
-    /// </summary>
-    private bool? _appliedWindowIconDark;
-
     public MainWindow()
     {
         InitializeComponent();
@@ -79,7 +76,7 @@ public sealed partial class MainWindow : Window
         if (!_windowIconSettled)
         {
             _windowIconSettled = true;
-            ApplyWindowIcon(TrayIconService.IsTaskbarDark());
+            ApplyWindowIcon();
         }
     }
 
@@ -110,15 +107,20 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 任务栏窗口图标（以及 Alt+Tab、标题栏左上角的小图标）由 AppWindow.SetIcon 控制，
-    /// 和托盘图标是两套机制。它同样不会跟随主题自动反色，需要按任务栏背景手动换。
+    /// 任务栏窗口图标（以及 Alt+Tab、标题栏左上角的小图标）由 AppWindow.SetIcon 控制。
+    ///
+    /// 固定用彩色品牌图标 AppIcon.ico（Fluent Color 日落），不随任务栏明暗反色。
+    /// 彩色图标在浅色和深色任务栏上都清晰，Windows 自身的应用也是这个做法。
+    /// 只有托盘区域那个小图标才按明暗切换（见 TrayIconService）。
     /// </summary>
-    private void ApplyWindowIcon(bool darkTaskbar)
+    private void ApplyWindowIcon()
     {
         if (_appWindow is null) return;
-        if (_appliedWindowIconDark == darkTaskbar) return;        try
+        if (_windowIconApplied) return;
+
+        try
         {
-            string path = TrayIconService.ResolveTaskbarIconPath(darkTaskbar);
+            string path = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
             if (!File.Exists(path))
             {
                 Log.Warn($"window icon missing: {path}");
@@ -126,13 +128,16 @@ public sealed partial class MainWindow : Window
             }
 
             _appWindow.SetIcon(path);
-            _appliedWindowIconDark = darkTaskbar;
+            _windowIconApplied = true;
         }
         catch (Exception ex)
         {
             Log.Warn($"apply window icon failed: {ex.Message}");
         }
     }
+
+    /// <summary>图标是固定的，设一次就够。</summary>
+    private bool _windowIconApplied;
 
     public void ShowAndActivate()
     {
@@ -147,8 +152,7 @@ public sealed partial class MainWindow : Window
         // 延后一拍：Show() 是异步的，立刻调 SetIcon 可能仍然早于按钮创建。
         _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
-            _appliedWindowIconDark = null;
-            ApplyWindowIcon(TrayIconService.IsTaskbarDark());
+            ApplyWindowIcon();
         });
     }
 
@@ -166,16 +170,14 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 应用内 logo 是单色位图，同样不会跟随主题自动反色。
-    /// 深色界面用白色字形，浅色界面用黑色字形。
+    /// 应用内 logo。改用彩色 Fluent 图标后不需要再按明暗反色，
+    /// 彩色图在浅色和深色界面上都清晰。
     /// </summary>
     private void ApplyBrandIcon(ElementTheme theme)
     {
         try
         {
-            string uri = theme == ElementTheme.Dark
-                ? "ms-appx:///Assets/BrandDark.png"
-                : "ms-appx:///Assets/BrandLight.png";
+            const string uri = "ms-appx:///Assets/AppIcon.png";
 
             var next = new BitmapImage(new Uri(uri));
             if (BrandIcon.Source is BitmapImage current && current.UriSource == next.UriSource) return;
@@ -201,36 +203,21 @@ public sealed partial class MainWindow : Window
         _tray.DarkRequested += () => Dispatch(() => SwitchScene(SystemTheme.Dark));
         _tray.ToggleSceneRequested += () => Dispatch(() => SwitchScene(ThemeSwitcher.Current == SystemTheme.Dark ? SystemTheme.Light : SystemTheme.Dark));
         _tray.ExitRequested += () => Dispatch(ExitFromTray);
-        _tray.TaskbarThemeChanged += dark => Dispatch(() => ApplyWindowIcon(dark));
 
         _tray.Show(App.Settings.ShowTrayIcon);
         _tray.ApplyTheme(App.IsAppDark() ? ElementTheme.Dark : ElementTheme.Light);
 
         // 托盘图标可能在 Show 之前就已落地，这里补一次。
-        ApplyWindowIcon(TrayIconService.IsTaskbarDark());
-        StartWindowIconWatch();
-    }
-
-    /// <summary>
-    /// 用户直接在系统设置里切换任务栏明暗时没有通知，用低频轮询兜底。
-    /// 只读一个注册表值，开销可忽略。
-    /// </summary>
-    private void StartWindowIconWatch()
-    {
-        var queue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
-        if (queue is null) return;
-
-        var timer = queue.CreateTimer();
-        timer.Interval = TimeSpan.FromSeconds(5);
-        timer.IsRepeating = true;
-        timer.Tick += (_, _) => ApplyWindowIcon(TrayIconService.IsTaskbarDark());
-        timer.Start();
+        ApplyWindowIcon();
     }
 
     public void SwitchScene(SystemTheme theme)
     {
         SceneService.Apply(theme);
         UpdateTrayStateFor(theme);
+
+        // 托盘图标不在这里换：ThemeSwitcher 写完注册表并广播后会发 Applied，
+        // 托盘自己订阅那个事件。这条链路只有一个来源，不会互相覆盖。
         _flyout?.RefreshThemeFor(theme);
     }
 
@@ -239,6 +226,9 @@ public sealed partial class MainWindow : Window
         SystemTheme target = ThemeSwitcher.Current;
         SceneService.ApplyWallpaperOnly(target);
 
+        // 注意：这里不碰托盘图标。
+        // ApplyAutoScene 会在场景切换的异步窗口内被调用，
+        // 此时 ThemeSwitcher.Current 可能还是旧值，会把已经设对的图标覆盖掉。
         if (App.Settings.ShowTrayIcon) UpdateTrayStateFor(target);
         _flyout?.RefreshThemeFor(target);
     }
@@ -429,6 +419,7 @@ public sealed partial class MainWindow : Window
     private void ExitFromTray()
     {
         _forceExit = true;
+        _tray.Dispose();
         _tray.Show(false);
         _flyout?.CloseFlyout();
         _flyout = null;

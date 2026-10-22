@@ -22,13 +22,13 @@ public sealed partial class SettingsPage : Page
         ActualThemeChanged += (_, _) => ApplyAboutIcon();
     }
 
+    /// <summary>关于页图标。彩色 Fluent 图标，不需要按明暗切换。</summary>
     private void ApplyAboutIcon()
     {
         if (AboutIcon is null) return;
 
-        string file = ActualTheme == ElementTheme.Dark ? "BrandDark.png" : "BrandLight.png";
         AboutIcon.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
-            new Uri($"ms-appx:///Assets/{file}"));
+            new Uri("ms-appx:///Assets/AppIcon.png"));
     }
 
     private void Load()
