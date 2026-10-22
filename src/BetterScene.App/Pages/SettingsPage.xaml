@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="BetterScene.App.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:BetterScene.App.Controls"
+    xmlns:tk="using:CommunityToolkit.WinUI.Controls"
+    Style="{StaticResource PageRootStyle}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <controls:PageHeader Title="设置" />
+
+        <ScrollViewer Grid.Row="1"
+                      Padding="36,0,36,0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Disabled"
+                      HorizontalContentAlignment="Stretch">
+            <StackPanel Padding="0,0,0,24" Spacing="{StaticResource SettingsCardSpacing}" HorizontalAlignment="Stretch">
+                <StackPanel.ChildrenTransitions>
+                    <TransitionCollection>
+                        <EntranceThemeTransition FromVerticalOffset="50" />
+                        <RepositionThemeTransition IsStaggeringEnabled="False" />
+                    </TransitionCollection>
+                </StackPanel.ChildrenTransitions>
+
+                <tk:SettingsExpander Header="外观">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE790;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="界面主题" >
+                            <ComboBox x:Name="ThemeBox" SelectionChanged="OnThemeChanged" MinWidth="160">
+                                <ComboBoxItem Content="跟随系统" Tag="default" />
+                                <ComboBoxItem Content="浅色" Tag="light" />
+                                <ComboBoxItem Content="深色" Tag="dark" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="背景材质">
+                            <ComboBox x:Name="BackdropBox" SelectionChanged="OnBackdropChanged" MinWidth="160">
+                                <ComboBoxItem Content="亚克力" Tag="Acrylic" />
+                                <ComboBoxItem Content="Mica" Tag="Mica" />
+                                <ComboBoxItem Content="纯色" Tag="Solid" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <tk:SettingsExpander Header="启动与托盘">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE7E8;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="开机自启">
+                            <ToggleSwitch x:Name="StartupSwitch" Toggled="OnStartupToggled" />
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="启动时最小化到托盘"
+                                         Description="程序启动后不显示主窗口，只在托盘里驻留。">
+                            <ToggleSwitch x:Name="StartMinimizedSwitch" Toggled="OnStartMinimizedToggled" />
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="显示托盘图标">
+                            <ToggleSwitch x:Name="TrayIconSwitch" Toggled="OnTrayIconToggled" />
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="关闭主窗口时">
+                            <ComboBox x:Name="CloseBehaviorBox" SelectionChanged="OnCloseBehaviorChanged" MinWidth="160">
+                                <ComboBoxItem Content="最小化到托盘" Tag="tray" />
+                                <ComboBoxItem Content="退出" Tag="exit" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <tk:SettingsExpander Header="亮度浮层">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE706;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="显示百分比"
+                                         Description="在进度条右侧显示当前亮度数值。">
+                            <ToggleSwitch x:Name="OsdPercentSwitch" Toggled="OnOsdPercentToggled" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <tk:SettingsExpander Header="迷你面板">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE8A7;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="自动收起"
+                                         Description="面板在没有操作一段时间后自动隐藏，0 表示不自动收起。">
+                            <ComboBox x:Name="MiniAutoHideBox"
+                                      MinWidth="160"
+                                      SelectionChanged="OnMiniAutoHideChanged" />
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="显示的控制项"
+                                         Description="勾选后会出现在迷你面板里，具体哪些可用取决于显示器本身。">
+                            <StackPanel x:Name="MiniControlList" Spacing="2" MinWidth="220" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <tk:SettingsExpander Header="数据">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE8B7;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="配置目录" >
+                            <TextBlock x:Name="DataDirText"
+                                       IsTextSelectionEnabled="True"
+                                       TextTrimming="CharacterEllipsis" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <tk:SettingsExpander Header="关于">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE946;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="产品信息">
+                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <Image x:Name="AboutIcon"
+                                       Width="28"
+                                       Height="28"
+                                       Source="ms-appx:///Assets/BrandLight.png" />
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock x:Name="ProductNameText"
+                                               Style="{StaticResource BodyStrongTextBlockStyle}"
+                                               Text="Windows 视觉改善" />
+                                    <TextBlock x:Name="ProductVersionText"
+                                               FontSize="12"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="版本 0.1.0" />
+                                </StackPanel>
+                            </StackPanel>
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="软件更新"
+                                         Description="从 GitHub Releases 检查新版本。">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock x:Name="UpdateStatusText"
+                                           VerticalAlignment="Center"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="尚未检查" />
+                                <Button x:Name="UpdateActionButton"
+                                        Content="检查更新"
+                                        Click="OnUpdateAction" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="下载加速"
+                                         Description="GitHub 下载加速前缀，留空则优先用内置镜像链。">
+                            <TextBox x:Name="AcceleratorBox"
+                                     Width="280"
+                                     PlaceholderText="例如 https://ghfast.top/"
+                                     TextChanged="OnAcceleratorChanged" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+

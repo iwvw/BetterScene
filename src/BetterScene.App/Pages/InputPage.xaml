@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="BetterScene.App.Pages.InputPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:BetterScene.App.Controls"
+    xmlns:tk="using:CommunityToolkit.WinUI.Controls"
+    Style="{StaticResource PageRootStyle}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <controls:PageHeader Title="输入" />
+
+        <ScrollViewer Grid.Row="1"
+                      Padding="36,0,36,0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Disabled"
+                      HorizontalContentAlignment="Stretch">
+            <StackPanel Padding="0,0,0,24" Spacing="{StaticResource SettingsCardSpacing}" HorizontalAlignment="Stretch">
+                <StackPanel.ChildrenTransitions>
+                    <TransitionCollection>
+                        <EntranceThemeTransition FromVerticalOffset="50" />
+                        <RepositionThemeTransition IsStaggeringEnabled="False" />
+                    </TransitionCollection>
+                </StackPanel.ChildrenTransitions>
+
+                <!-- 键盘快捷键 -->
+                <tk:SettingsCard Header="启用全局快捷键">
+                    <ToggleSwitch x:Name="EnabledSwitch" Toggled="OnEnabledToggled" />
+                </tk:SettingsCard>
+
+                <tk:SettingsExpander Header="快捷键">                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE765;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="切换明暗" >
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBox x:Name="ToggleSceneBox"
+                                         MinWidth="180"
+                                         IsReadOnly="True"
+                                         PlaceholderText="未设置"
+                                         Tag="scene"
+                                         GotFocus="OnHotkeyBoxFocused"
+                                         KeyDown="OnHotkeyBoxKeyDown"
+                                         LostFocus="OnHotkeyBoxLostFocus" />
+                                <Button Content="清除" Click="OnClearScene" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="显示 / 收起抽屉面板">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBox x:Name="TogglePanelBox"
+                                         MinWidth="180"
+                                         IsReadOnly="True"
+                                         PlaceholderText="未设置"
+                                         Tag="panel"
+                                         GotFocus="OnHotkeyBoxFocused"
+                                         KeyDown="OnHotkeyBoxKeyDown"
+                                         LostFocus="OnHotkeyBoxLostFocus" />
+                                <Button Content="清除" Click="OnClearPanel" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="提高主显示器亮度" >
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBox x:Name="BrightnessUpBox"
+                                         MinWidth="180"
+                                         IsReadOnly="True"
+                                         PlaceholderText="未设置"
+                                         Tag="up"
+                                         GotFocus="OnHotkeyBoxFocused"
+                                         KeyDown="OnHotkeyBoxKeyDown"
+                                         LostFocus="OnHotkeyBoxLostFocus" />
+                                <Button Content="清除" Click="OnClearUp" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="降低主显示器亮度" >
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBox x:Name="BrightnessDownBox"
+                                         MinWidth="180"
+                                         IsReadOnly="True"
+                                         PlaceholderText="未设置"
+                                         Tag="down"
+                                         GotFocus="OnHotkeyBoxFocused"
+                                         KeyDown="OnHotkeyBoxKeyDown"
+                                         LostFocus="OnHotkeyBoxLostFocus" />
+                                <Button Content="清除" Click="OnClearDown" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="每次步进">
+                            <ComboBox x:Name="HotkeyStepBox" SelectionChanged="OnHotkeyStepChanged" MinWidth="180">
+                                <ComboBoxItem Content="1%" Tag="1" />
+                                <ComboBoxItem Content="2%" Tag="2" />
+                                <ComboBoxItem Content="5%" Tag="5" />
+                                <ComboBoxItem Content="10%" Tag="10" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="恢复默认">                            <Button Content="恢复默认" Click="OnResetDefaults" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <!-- 滚轮 -->
+                <tk:SettingsExpander Header="鼠标滚轮">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE962;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="生效区域" >
+                            <ComboBox x:Name="WheelModeBox" SelectionChanged="OnWheelModeChanged" MinWidth="180">
+                                <ComboBoxItem Content="关闭" Tag="off" />
+                                <ComboBoxItem Content="任务栏上" Tag="taskbar" />
+                                <ComboBoxItem Content="桌面与任务栏" Tag="desktop" />
+                                <ComboBoxItem Content="任意位置" Tag="any" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="修饰键" >
+                            <ComboBox x:Name="WheelModifierBox" SelectionChanged="OnWheelModifierChanged" MinWidth="180">
+                                <ComboBoxItem Content="不需要" Tag="None" />
+                                <ComboBoxItem Content="Ctrl" Tag="Ctrl" />
+                                <ComboBoxItem Content="Alt" Tag="Alt" />
+                                <ComboBoxItem Content="Shift" Tag="Shift" />
+                                <ComboBoxItem Content="Ctrl+Alt" Tag="Ctrl+Alt" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="每次步进">
+                            <ComboBox x:Name="WheelStepBox" SelectionChanged="OnWheelStepChanged" MinWidth="180">
+                                <ComboBoxItem Content="1%" Tag="1" />
+                                <ComboBoxItem Content="2%" Tag="2" />
+                                <ComboBoxItem Content="5%" Tag="5" />
+                                <ComboBoxItem Content="10%" Tag="10" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <!-- 悬浮窗 -->
+                <tk:SettingsExpander Header="亮度悬浮窗">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE7F4;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="显示悬浮窗">                            <ToggleSwitch x:Name="OsdSwitch" Toggled="OnOsdToggled" />
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="停留时长">
+                            <ComboBox x:Name="OsdDurationBox" SelectionChanged="OnOsdDurationChanged" MinWidth="180">
+                                <ComboBoxItem Content="1 秒" Tag="1000" />
+                                <ComboBoxItem Content="1.5 秒" Tag="1500" />
+                                <ComboBoxItem Content="2 秒" Tag="2000" />
+                                <ComboBoxItem Content="3 秒" Tag="3000" />
+                            </ComboBox>
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+

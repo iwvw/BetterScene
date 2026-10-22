@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="BetterScene.App.Pages.AutoSwitchPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:BetterScene.App.Controls"
+    xmlns:tk="using:CommunityToolkit.WinUI.Controls"
+    Style="{StaticResource PageRootStyle}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <controls:PageHeader Title="自动切换" />
+
+        <ScrollViewer Grid.Row="1"
+                      Padding="36,0,36,0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Disabled"
+                      HorizontalContentAlignment="Stretch">
+            <StackPanel Padding="0,0,0,24" Spacing="{StaticResource SettingsCardSpacing}" HorizontalAlignment="Stretch">
+                <StackPanel.ChildrenTransitions>
+                    <TransitionCollection>
+                        <EntranceThemeTransition FromVerticalOffset="50" />
+                        <RepositionThemeTransition IsStaggeringEnabled="False" />
+                    </TransitionCollection>
+                </StackPanel.ChildrenTransitions>
+
+                <!-- 1. 状态 -->
+                <tk:SettingsCard Header="当前状态">
+                    <StackPanel Spacing="2">
+                        <TextBlock x:Name="StateText"
+                                   Style="{StaticResource BodyStrongTextBlockStyle}"
+                                   Text="已关闭" />
+                        <TextBlock x:Name="StateDetailText"
+                                   FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="" />
+                    </StackPanel>
+                </tk:SettingsCard>
+
+                <!-- 2. 切换方式 -->
+                <tk:SettingsExpander Header="切换方式">
+                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE895;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="模式">
+                            <Grid ColumnSpacing="8" MinWidth="280" MaxWidth="420">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="ModeBox"
+                                          Grid.Column="0"
+                                          HorizontalAlignment="Stretch"
+                                          SelectionChanged="OnModeChanged">
+                                    <ComboBoxItem Content="关闭" Tag="off" />
+                                    <ComboBoxItem Content="跟随系统明暗" Tag="system" />
+                                    <ComboBoxItem Content="按时间规则" Tag="schedule" />
+                                </ComboBox>
+                            </Grid>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="夜间模式联动">                            <Grid ColumnSpacing="8" MinWidth="280" MaxWidth="420">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <ToggleSwitch x:Name="NightLightSwitch"
+                                              Grid.Column="0"
+                                              HorizontalAlignment="Left"
+                                              Toggled="OnNightLightToggled" />
+                            </Grid>
+                        </tk:SettingsCard>
+                        <tk:SettingsCard Header="位置">                            <Grid ColumnSpacing="8" MinWidth="280" MaxWidth="420">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0"
+                                            Orientation="Horizontal"
+                                            Spacing="8">
+                                    <NumberBox x:Name="LatitudeBox"
+                                               Width="112"
+                                               Header="纬度"
+                                               Minimum="-66"
+                                               Maximum="66"
+                                               SmallChange="0.1"
+                                               ValueChanged="OnLatitudeChanged"
+                                               SpinButtonPlacementMode="Compact" />
+                                    <NumberBox x:Name="LongitudeBox"
+                                               Width="112"
+                                               Header="经度"
+                                               Minimum="-180"
+                                               Maximum="180"
+                                               SmallChange="0.1"
+                                               ValueChanged="OnLongitudeChanged"
+                                               SpinButtonPlacementMode="Compact" />
+                                </StackPanel>
+                                <Button Grid.Column="1"
+                                        Content="自动获取"
+                                        VerticalAlignment="Bottom"
+                                        Click="OnDetectLocation" />
+                            </Grid>
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <!-- 3. 规则 -->
+                <tk:SettingsExpander x:Name="RulesExpander"
+                                     Header="时间规则">                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE787;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="规则">
+                            <StackPanel Spacing="8">
+                                <StackPanel x:Name="RulesHost" Spacing="6">
+                                    <StackPanel.ChildrenTransitions>
+                                        <TransitionCollection>
+                                            <RepositionThemeTransition IsStaggeringEnabled="False" />
+                                        </TransitionCollection>
+                                    </StackPanel.ChildrenTransitions>
+                                </StackPanel>
+                                <Button Content="添加规则"
+                                        HorizontalAlignment="Left"
+                                        Click="OnAddRule" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+
+                <!-- 4. 条件 -->
+                <tk:SettingsExpander Header="阻止条件">                    <tk:SettingsExpander.HeaderIcon>
+                        <FontIcon Glyph="&#xE81C;" />
+                    </tk:SettingsExpander.HeaderIcon>
+                    <tk:SettingsExpander.Items>
+                        <tk:SettingsCard Header="GPU 占用高时不切换">                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <ToggleSwitch x:Name="GpuSwitch" Toggled="OnConditionChanged" />
+                                <NumberBox x:Name="GpuThresholdBox"
+                                           Width="120"
+                                           Minimum="1"
+                                           Maximum="100"
+                                           SmallChange="5"
+                                           SpinButtonPlacementMode="Compact"
+                                           ValueChanged="OnGpuThresholdChanged" />
+                                <TextBlock Text="%"
+                                           VerticalAlignment="Center"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="指定程序运行时不切换">                            <StackPanel Spacing="8" Width="360">
+                                <ToggleSwitch x:Name="ProcessSwitch"
+                                              OnContent="已启用"
+                                              OffContent="未启用"
+                                              Toggled="OnConditionChanged" />
+                                <TextBox x:Name="ProcessInput"
+                                         PlaceholderText="例如 chrome 或 steam.exe"
+                                         KeyDown="OnProcessInputKeyDown" />
+                                <ItemsControl x:Name="ProcessList">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" Spacing="6" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                            </StackPanel>
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="全屏程序运行时不切换">                            <ToggleSwitch x:Name="FullscreenSwitch" Toggled="OnConditionChanged" />
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="仅在空闲时切换">                            <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                <ToggleSwitch x:Name="IdleSwitch" Toggled="OnConditionChanged" />
+                                <NumberBox x:Name="IdleMinutesBox"
+                                           Width="120"
+                                           Minimum="1"
+                                           Maximum="120"
+                                           SmallChange="1"
+                                           SpinButtonPlacementMode="Compact"
+                                           ValueChanged="OnIdleMinutesChanged" />
+                                <TextBlock Text="分钟"
+                                           VerticalAlignment="Center"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </tk:SettingsCard>
+
+                        <tk:SettingsCard Header="电池供电时使用深色">                            <ToggleSwitch x:Name="BatterySwitch" Toggled="OnConditionChanged" />
+                        </tk:SettingsCard>
+                    </tk:SettingsExpander.Items>
+                </tk:SettingsExpander>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+

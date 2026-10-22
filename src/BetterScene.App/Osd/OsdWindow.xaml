@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="BetterScene.App.Osd.OsdWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="Root" Background="Transparent">
+        <Border x:Name="OsdBorder"
+                Background="Transparent"
+                BorderBrush="{ThemeResource OsdStrokeBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+            <Grid Padding="15,13" ColumnSpacing="11">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 用 FontIcon 而不是 PNG：字形颜色直接由 Foreground 决定，
+                     跟随 RequestedTheme 自动变化，不存在"白图配浅底"的错配。 -->
+                <FontIcon x:Name="OsdIcon"
+                          Grid.Column="0"
+                          FontSize="16"
+                          VerticalAlignment="Center"
+                          Foreground="{ThemeResource OsdForegroundBrush}"
+                          Glyph="&#xE706;" />
+
+                <!-- 进度条本体只有 4px 高，外面套一层更高的透明命中区，
+                     否则鼠标很难点中。 -->
+                <Grid x:Name="TrackHit"
+                      Grid.Column="1"
+                      Height="20"
+                      VerticalAlignment="Center"
+                      Background="Transparent">
+                    <Grid x:Name="Track"
+                          Width="124"
+                          Height="4"
+                          VerticalAlignment="Center"
+                          CornerRadius="2"
+                          Background="{ThemeResource OsdTrackBrush}"
+                          SizeChanged="OnTrackSizeChanged">
+                        <Border x:Name="FillBar"
+                                Width="0"
+                                HorizontalAlignment="Left"
+                                CornerRadius="2"
+                                Background="{ThemeResource OsdFillBrush}" />
+                    </Grid>
+                </Grid>
+
+                <!-- 百分比。固定宽度避免数字位数变化时进度条左右跳动。 -->
+                <TextBlock x:Name="PercentText"
+                           Grid.Column="2"
+                           Width="26"
+                           TextAlignment="Right"
+                           VerticalAlignment="Center"
+                           FontSize="12"
+                           Foreground="{ThemeResource OsdForegroundBrush}"
+                           Visibility="Collapsed"
+                           Text="100%" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

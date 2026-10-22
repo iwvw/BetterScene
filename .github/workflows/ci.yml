@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build:
+    name: Build & test (${{ matrix.arch }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+          - arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore BetterScene.slnx -p:Platform=${{ matrix.arch }}
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build BetterScene.slnx -c Release --no-restore -p:Platform=${{ matrix.arch }}
+
+      # 测试项目与 Core 共用同一 TFM，跑一次就够；只在一个架构上跑避免重复。
+      - name: Test
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: dotnet test tests/BetterScene.Core.Tests/BetterScene.Core.Tests.csproj -c Release --no-build -p:Platform=x64

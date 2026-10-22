@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="BetterScene.App.Flyout.FlyoutWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:BetterScene.App.Flyout">
+
+    <!-- 必须 Stretch：面板要铺满整个窗口，内部根布局才能贴住窗口底边。
+         若这里是 Top，面板只有内容那么高并停在窗口顶部，
+         窗口变矮时底部控制栏就会跟着往上跳。 -->
+    <local:FlyoutPanel x:Name="Panel"
+                       HorizontalAlignment="Stretch"
+                       VerticalAlignment="Stretch" />
+</Window>

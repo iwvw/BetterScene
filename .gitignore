@@ -1,0 +1,22 @@
+# 构建产物
+bin/
+obj/
+artifacts/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# 临时文件
+*.log
+*.tmp
+release-notes.md
+
+# 安装器下载的语言包
+build/languages/
+
+# 系统
+Thumbs.db
+desktop.ini

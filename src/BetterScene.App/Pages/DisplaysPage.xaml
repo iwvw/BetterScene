@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="BetterScene.App.Pages.DisplaysPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:BetterScene.App.Controls"
+    xmlns:services="using:BetterScene.App.Services"
+    xmlns:tk="using:CommunityToolkit.WinUI.Controls"
+    Style="{StaticResource PageRootStyle}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <controls:PageHeader Title="显示器">
+            <controls:PageHeader.Actions>
+                <Button x:Name="RefreshButton" Content="重新检测" Click="OnRefreshClick" />
+            </controls:PageHeader.Actions>
+        </controls:PageHeader>
+
+        <ScrollViewer Grid.Row="1"
+                      Padding="36,0,36,0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Disabled"
+                      HorizontalContentAlignment="Stretch">
+            <StackPanel Padding="0,0,0,24" Spacing="{StaticResource SettingsCardSpacing}" HorizontalAlignment="Stretch">
+                <StackPanel.ChildrenTransitions>
+                    <TransitionCollection>
+                        <EntranceThemeTransition FromVerticalOffset="50" />
+                        <RepositionThemeTransition IsStaggeringEnabled="False" />
+                    </TransitionCollection>
+                </StackPanel.ChildrenTransitions>
+
+                <ItemsControl x:Name="DisplayList">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="services:DisplaySliderItem">
+                            <tk:SettingsExpander Header="{x:Bind Title, Mode=OneWay}"
+                                                 Description="{x:Bind HardwareSummary, Mode=OneWay}"
+                                                 Margin="0,0,0,4">
+                                <tk:SettingsExpander.Items>
+                                    <tk:SettingsCard Header="品牌">
+                                        <TextBlock Text="{x:Bind Brand, Mode=OneWay}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </tk:SettingsCard>
+
+                                    <tk:SettingsCard Header="型号">
+                                        <TextBlock Text="{x:Bind ModelName, Mode=OneWay}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </tk:SettingsCard>
+
+                                    <tk:SettingsCard Header="控制方式">
+                                        <TextBlock Text="{x:Bind BackendSummary, Mode=OneWay}"
+                                                   TextAlignment="Right"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </tk:SettingsCard>
+
+                                    <tk:SettingsCard Header="原始数据">
+                                        <TextBlock Text="{x:Bind RawSummary, Mode=OneWay}"
+                                                   TextAlignment="Right"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </tk:SettingsCard>
+
+                                    <tk:SettingsCard Header="控制项探测">
+                                        <Button Content="探测能力"
+                                                Click="OnProbeCapabilities"
+                                                Tag="{x:Bind Id}" />
+                                    </tk:SettingsCard>
+
+                                    <tk:SettingsCard Header="亮度范围">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <NumberBox Value="{x:Bind RangeLow, Mode=TwoWay}"
+                                                       Minimum="0"
+                                                       Maximum="100"
+                                                       SpinButtonPlacementMode="Compact"
+                                                       Width="110"
+                                                       SmallChange="1"
+                                                       Header="最低" />
+                                            <NumberBox Value="{x:Bind RangeHigh, Mode=TwoWay}"
+                                                       Minimum="0"
+                                                       Maximum="100"
+                                                       SpinButtonPlacementMode="Compact"
+                                                       Width="110"
+                                                       SmallChange="1"
+                                                       Header="最高" />
+                                            <Button Content="重置"
+                                                    VerticalAlignment="Bottom"
+                                                    Click="OnResetRange"
+                                                    Tag="{x:Bind Id}" />
+                                        </StackPanel>
+                                    </tk:SettingsCard>
+                                </tk:SettingsExpander.Items>
+                            </tk:SettingsExpander>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <tk:SettingsCard x:Name="EmptyCard"
+                                 Header="未检测到显示器"
+
+                                 Visibility="Collapsed" />
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>
+
+
+
+
+

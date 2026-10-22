@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="BetterScene.App.Controls.SceneRuleCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+      固定列宽 + 显式间距：
+      列宽必须固定，否则窗口拉宽时 ComboBox 会被无限拉伸；
+      间距必须显式给出，否则控件会贴在一起。
+    -->
+    <Grid Background="{ThemeResource LayerFillColorDefaultBrush}"
+          CornerRadius="4"
+          Padding="16,12"
+          ColumnSpacing="10"
+          RowSpacing="10">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="56" />
+            <ColumnDefinition Width="150" />
+            <ColumnDefinition Width="190" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 标题跨两行居中 -->
+        <TextBlock x:Name="IndexText"
+                   Grid.RowSpan="2"
+                   VerticalAlignment="Center"
+                   TextWrapping="NoWrap"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+        <!-- 第 0 行：类型 / 时刻 / 启用 -->
+        <ComboBox x:Name="KindBox"
+                  Grid.Row="0"
+                  Grid.Column="1"
+                  VerticalAlignment="Center"
+                  HorizontalAlignment="Stretch"
+                  SelectionChanged="OnKindChanged">
+            <ComboBoxItem Content="固定时刻" />
+            <ComboBoxItem Content="日出" />
+            <ComboBoxItem Content="日落" />
+            <ComboBoxItem Content="夜间模式开启" />
+        </ComboBox>
+
+        <StackPanel x:Name="TimePanel"
+                    Grid.Row="0"
+                    Grid.Column="2"
+                    Orientation="Horizontal"
+                    Spacing="4"
+                    VerticalAlignment="Center"
+                    HorizontalAlignment="Left">
+            <NumberBox x:Name="HourBox"
+                       Width="82"
+                       Minimum="0"
+                       Maximum="23"
+                       SmallChange="1"
+                       SpinButtonPlacementMode="Compact"
+                       ValueChanged="OnTimeChanged" />
+            <TextBlock Text=":"
+                       VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <NumberBox x:Name="MinuteBox"
+                       Width="82"
+                       Minimum="0"
+                       Maximum="59"
+                       SmallChange="1"
+                       SpinButtonPlacementMode="Compact"
+                       ValueChanged="OnTimeChanged" />
+        </StackPanel>
+
+        <ToggleSwitch x:Name="EnabledSwitch"
+                      Grid.Row="0"
+                      Grid.Column="3"
+                      MinWidth="0"
+                      VerticalAlignment="Center"
+                      HorizontalAlignment="Right"
+                      OnContent=""
+                      OffContent=""
+                      Toggled="OnEnabledToggled" />
+
+        <!-- 第 1 行：星期 / 场景 / 删除 -->
+        <ComboBox x:Name="DaysBox"
+                  Grid.Row="1"
+                  Grid.Column="1"
+                  VerticalAlignment="Center"
+                  HorizontalAlignment="Stretch"
+                  SelectionChanged="OnDaysChanged">
+            <ComboBoxItem Content="每天" />
+            <ComboBoxItem Content="工作日" />
+            <ComboBoxItem Content="周末" />
+        </ComboBox>
+
+        <ComboBox x:Name="SceneBox"
+                  Grid.Row="1"
+                  Grid.Column="2"
+                  VerticalAlignment="Center"
+                  HorizontalAlignment="Stretch"
+                  SelectionChanged="OnSceneChanged">
+            <ComboBoxItem Content="浅色" />
+            <ComboBoxItem Content="深色" />
+        </ComboBox>
+
+        <Button x:Name="DeleteButton"
+                Grid.Row="1"
+                Grid.Column="3"
+                Width="36"
+                Height="32"
+                Padding="0"
+                VerticalAlignment="Center"
+                HorizontalAlignment="Right"
+                Click="OnDeleteClick">
+            <FontIcon Glyph="&#xE74D;" FontSize="14" />
+        </Button>
+    </Grid>
+</UserControl>
+

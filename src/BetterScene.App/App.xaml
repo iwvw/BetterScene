@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="BetterScene.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <ResourceDictionary Source="ms-appx:///Styles/ThemeResources.xaml" />
+                <ResourceDictionary Source="ms-appx:///TrayMenu.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- 内容区透出 Mica 背景：覆盖 NavigationView 默认的半透明灰层（LayerFillColorDefaultBrush） -->
+            <SolidColorBrush x:Key="NavigationViewContentBackground" Color="Transparent" />
+
+            <!-- 去掉导航栏与内容区之间的竖线、内容区顶部横线 -->
+            <SolidColorBrush x:Key="NavigationViewItemSeparatorForeground" Color="Transparent" />
+            <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="Transparent" />
+
+            <!-- 导航栏自身也透出背景，避免切页时出现灰底矩形 -->
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="Transparent" />
+            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="Transparent" />
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="Transparent" />
+
+            <x:Double x:Key="SettingsCardSpacing">4</x:Double>
+
+            <!-- 代码构建控件时用的前景色。
+                 关键：{ThemeResource} 写在 Setter 里，主题变化时 XAML 会自动
+                 重新解析，元素颜色随之更新。若在 C# 里直接
+                 Application.Current.Resources["..."] 取 Brush 赋给 Foreground，
+                 拿到的是一个固定实例，切主题后不会变。 -->
+            <Style x:Key="SecondaryForegroundTextStyle" TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+
+            <Style x:Key="SecondaryForegroundIconStyle" TargetType="FontIcon">
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="FontSize" Value="14" />
+            </Style>
+
+            <Style x:Key="CardStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="16" />
+            </Style>
+
+            <Style x:Key="PageRootStyle" TargetType="Page">
+                <Setter Property="Background" Value="Transparent" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

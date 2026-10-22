@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Default">
+            <SolidColorBrush x:Key="SceneAccentBrush" Color="#4CC2FF" />
+            <SolidColorBrush x:Key="SceneDividerBrush" Color="#18FFFFFF" />
+            <SolidColorBrush x:Key="SceneTileBackgroundBrush" Color="#0FFFFFFF" />
+            <SolidColorBrush x:Key="SceneTileStrokeBrush" Color="#18FFFFFF" />
+            <SolidColorBrush x:Key="OsdBackgroundBrush" Color="#2C2C2C" />
+            <SolidColorBrush x:Key="OsdStrokeBrush" Color="#08FFFFFF" />
+            <SolidColorBrush x:Key="OsdForegroundBrush" Color="#F2FFFFFF" />
+            <SolidColorBrush x:Key="OsdTrackBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="OsdFillBrush" Color="#B0AAEE" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="SceneAccentBrush" Color="#0067C0" />
+            <SolidColorBrush x:Key="SceneDividerBrush" Color="#18000000" />
+            <SolidColorBrush x:Key="SceneTileBackgroundBrush" Color="#08000000" />
+            <SolidColorBrush x:Key="SceneTileStrokeBrush" Color="#18000000" />
+            <SolidColorBrush x:Key="OsdBackgroundBrush" Color="#F7F7F7" />
+            <SolidColorBrush x:Key="OsdStrokeBrush" Color="#05000000" />
+            <SolidColorBrush x:Key="OsdForegroundBrush" Color="#1A1A1A" />
+            <SolidColorBrush x:Key="OsdTrackBrush" Color="#26000000" />
+            <SolidColorBrush x:Key="OsdFillBrush" Color="#5B57C2" />
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+
+</ResourceDictionary>

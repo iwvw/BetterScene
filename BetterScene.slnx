@@ -1,0 +1,15 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="ARM64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/BetterScene.App/BetterScene.App.csproj" />
+    <Project Path="src/BetterScene.Core/BetterScene.Core.csproj" />
+    <Project Path="src/BetterScene.Displays/BetterScene.Displays.csproj" />
+    <Project Path="src/BetterScene.Host/BetterScene.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BetterScene.Core.Tests/BetterScene.Core.Tests.csproj" />
+  </Folder>
+</Solution>

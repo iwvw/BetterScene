@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: '版本递增方式（none = 用当前 Directory.Build.props 版本）'
+        type: choice
+        required: true
+        default: patch
+        options:
+          - none
+          - patch
+          - minor
+          - major
+      version:
+        description: '显式版本号（如 0.2.0），填写后忽略上面的递增方式'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  CONFIGURATION: Release
+
+jobs:
+  # 手动触发时：递增版本号 → 提交 → 打 tag → 推送。
+  # 用 GITHUB_TOKEN 推送不会二次触发本工作流（GitHub 的递归保护），
+  # 因此构建与发布在同一次运行内完成。人工推 tag 时本作业跳过。
+  prepare:
+    name: Bump & tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version
+        id: ver
+        shell: pwsh
+        run: |
+          $explicit = "${{ github.event.inputs.version }}"
+          $bump = "${{ github.event.inputs.bump }}"
+          if (-not [string]::IsNullOrWhiteSpace($explicit)) {
+            $v = pwsh -File build/bump-version.ps1 -Set $explicit
+          } elseif ($bump -eq 'none') {
+            [xml]$xml = Get-Content -LiteralPath Directory.Build.props
+            $v = $xml.Project.PropertyGroup.VersionPrefix
+          } else {
+            $v = pwsh -File build/bump-version.ps1 -Bump $bump
+          }
+          $v = ($v | Select-Object -Last 1).Trim()
+          Write-Host "Resolved version: $v"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Commit & push tag
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Directory.Build.props
+          git commit -m "chore: release v$v [skip ci]" || Write-Host "无变更可提交"
+          if (-not (git tag --list "v$v")) { git tag "v$v" } else { Write-Host "tag v$v 已存在，跳过" }
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin "v$v"
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: [prepare]
+    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+          - arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 手动触发时 prepare 刚推送了被 bump 的提交，取分支最新；tag 触发时取该 tag 的提交。
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.sha }}
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ needs.prepare.outputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($v)) {
+            # tag 推送：从 ref 解析，并校验与 Directory.Build.props 一致。
+            $v = $env:GITHUB_REF -replace '^refs/tags/v', ''
+            [xml]$xml = Get-Content -LiteralPath Directory.Build.props
+            $declared = $xml.Project.PropertyGroup.VersionPrefix
+            if ($v -ne $declared) {
+              throw "tag v$v 与 Directory.Build.props 的 VersionPrefix=$declared 不一致。"
+            }
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Build version: $v"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install Inno Setup
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Fetch Simplified Chinese language file
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $dir = "build\languages"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $path = "Files/Languages/ChineseSimplified.isl"
+          $urls = @(
+            "https://raw.githubusercontent.com/jrsoftware/issrc/main/$path",
+            "https://gh-proxy.org/https://raw.githubusercontent.com/jrsoftware/issrc/main/$path",
+            "https://ghproxy.net/https://raw.githubusercontent.com/jrsoftware/issrc/main/$path"
+          )
+          foreach ($u in $urls) {
+            try {
+              Invoke-WebRequest -Uri $u -OutFile "$dir\ChineseSimplified.isl" -TimeoutSec 30
+              Write-Host "Downloaded ChineseSimplified.isl from $u"
+              break
+            } catch {
+              Write-Host "::warning::下载失败：$u"
+            }
+          }
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: |
+          pwsh -File build/build-release.ps1 `
+            -Variant all `
+            -Arch "${{ matrix.arch }}" `
+            -Version "${{ steps.ver.outputs.version }}" `
+            -Configuration $env:CONFIGURATION
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BetterScene-${{ matrix.arch }}
+          path: |
+            artifacts/BetterScene-*.zip
+            artifacts/BetterScene-*-setup.exe
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: [prepare, build]
+    if: always() && needs.build.result == 'success'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        shell: pwsh
+        run: Get-ChildItem artifacts -Recurse | Select-Object Name, Length
+
+      - name: Resolve version & previous tag
+        id: meta
+        shell: pwsh
+        run: |
+          $v = "${{ needs.prepare.outputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($v)) { $v = $env:GITHUB_REF -replace '^refs/tags/v', '' }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # 首个 tag 没有上一个 tag，git describe 返回非零；显式清掉 LASTEXITCODE，
+          # 否则 GitHub Actions 的 pwsh 包装器会把步骤判为失败。
+          $prev = git describe --tags --abbrev=0 "v$v^" 2>$null
+          if ($LASTEXITCODE -ne 0) { $prev = '' }
+          $global:LASTEXITCODE = 0
+          "previous=$prev" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "version=$v previous=$prev"
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          pwsh -File .github/scripts/gen-release-notes.ps1 `
+            -Version "${{ steps.meta.outputs.version }}" `
+            -ArtifactsDir "${{ github.workspace }}/artifacts" `
+            -OutputPath "${{ github.workspace }}/release-notes.md" `
+            -PreviousTag "${{ steps.meta.outputs.previous }}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.meta.outputs.version }}
+          files: artifacts/*
+          body_path: release-notes.md
+          draft: false
