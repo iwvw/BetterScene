@@ -74,6 +74,44 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     /// <summary>型号，例如 QSN-CBA / NE153QDM-NZ1。</summary>
     public string ModelName { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// 显示器页卡片头部右侧的那行字：品牌 · 型号。
+    ///
+    /// 展开后 Items 里有独立的「品牌」「型号」卡片，但折叠状态看不到，
+    /// 而折叠时标题只有型号（"QSN-CBA"），认不出厂商。
+    ///
+    /// 品牌与型号相同时（很多内屏的 EDID 型号里已经含品牌）
+    /// 只显示一次，避免 "BOE · BOE NE153QDM-NZ1" 这种重复。
+    /// </summary>
+    public string NameLine { get; private set; } = string.Empty;
+
+    public Visibility NameLineVisibility =>
+        string.IsNullOrWhiteSpace(NameLine) ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>根据当前 Brand / ModelName 重算 <see cref="NameLine"/>。</summary>
+    private void UpdateNameLine()
+    {
+        string brand = Brand?.Trim() ?? string.Empty;
+        string model = ModelName?.Trim() ?? string.Empty;
+
+        if (brand.Length == 0)
+        {
+            NameLine = model;
+            return;
+        }
+
+        if (model.Length == 0 || string.Equals(brand, model, StringComparison.OrdinalIgnoreCase))
+        {
+            NameLine = brand;
+            return;
+        }
+
+        // 型号里已经带了品牌就不再重复前缀。
+        NameLine = model.Contains(brand, StringComparison.OrdinalIgnoreCase)
+            ? model
+            : $"{brand} · {model}";
+    }
+
     /// <summary>硬件标识行：连接方式 · 分辨率 · 刷新率。</summary>
     public string HardwareSummary { get; private set; } = string.Empty;
 
@@ -395,6 +433,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
         Brand = target.Vendor;
         ModelName = string.IsNullOrWhiteSpace(target.Model) ? target.FirmwareId : target.Model;
+        UpdateNameLine();
 
         BackendSummary = target.Backend switch
         {
@@ -708,6 +747,11 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         Icon = "\uE71B";
         CanControl = canControl;
 
+        // 组卡片代表多台屏，没有单一品牌/型号。
+        Brand = string.Empty;
+        ModelName = string.Empty;
+        UpdateNameLine();
+
         // 组卡片代表多台显示器，没有单一尺寸。
         SizeText = string.Empty;
         OnPropertyChanged(nameof(SizeText));
@@ -1015,6 +1059,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(Brand));
         OnPropertyChanged(nameof(ModelName));
+        OnPropertyChanged(nameof(NameLine));
+        OnPropertyChanged(nameof(NameLineVisibility));
         OnPropertyChanged(nameof(HardwareSummary));
         OnPropertyChanged(nameof(RawSummary));
         OnPropertyChanged(nameof(Level));

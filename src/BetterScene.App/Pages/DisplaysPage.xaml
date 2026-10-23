@@ -44,6 +44,20 @@
                             <tk:SettingsExpander Header="{x:Bind Title, Mode=OneWay}"
                                                  Description="{x:Bind HardwareSummary, Mode=OneWay}"
                                                  Margin="0,0,0,4">
+                                <!-- 折叠状态下的头部右侧：品牌 + 型号。
+                                     展开后的 Items 里也有这两项，但那要展开才看得到；
+                                     折叠时标题只有型号（如 "QSN-CBA"），
+                                     用户看不出是哪家厂商。这里在右侧补一行。
+                                     用 Content 而不是塞进 Description：
+                                     Description 在标题下方，会被 HardwareSummary
+                                     挤成三行，卡片变高且和列表节奏不一致。 -->
+                                <tk:SettingsExpander.Content>
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Visibility="{x:Bind NameLineVisibility, Mode=OneWay}"
+                                               Text="{x:Bind NameLine, Mode=OneWay}" />
+                                </tk:SettingsExpander.Content>
                                 <tk:SettingsExpander.Items>
                                     <tk:SettingsCard Header="品牌">
                                         <TextBlock Text="{x:Bind Brand, Mode=OneWay}"
