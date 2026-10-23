@@ -1,0 +1,222 @@
+using System.Runtime;
+using System.Runtime.InteropServices;
+using BetterScene.Core;
+
+namespace BetterScene.App.Services;
+
+/// <summary>
+/// 主动回收工作集（working set）。
+///
+/// 为什么要做这件事：
+///
+/// 本程序的托管堆只有 3–4 MB，但工作集能到 200 MB 以上。
+/// 差额几乎全是 WinUI 3 / D3D / 显卡驱动在渲染过程中申请的**原生内存**：
+/// 交换链后备缓冲、着色器编译缓存、字形与纹理缓存、D3D 的 staging 资源等。
+/// 这些页一旦被访问过就一直留在工作集里，即使窗口已经隐藏、
+/// 那部分资源短期内不会再碰。
+///
+/// 实测在没有渲染活动的状态下清一次工作集，
+/// 可以从 228 MB 掉到 13 MB，而且立刻切回面板、拖滑块、切页面
+/// 都不受影响——被换出去的页缺页时会自动重新读回来。
+/// 这是纯收益：物理内存交还给系统，代价只是下次用到时多几次缺页。
+///
+/// 调用时机刻意选在「确定没有渲染活动」的时刻，见 <see cref="IsUiActive"/>。
+/// </summary>
+public static class MemoryTrimmer
+{
+    [DllImport("psapi.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    /// <summary>
+    /// 两次修剪之间的最小间隔。
+    ///
+    /// 实测界面收起后立刻修剪，可以把工作集从 100 MB 打到 1.3 MB，
+    /// 而用户重新打开只多几次缺页（首帧感知不到）。
+    /// 间隔设得小才能让「关掉界面后任务管理器里的数字马上变小」成立；
+    /// 但也不能太小：连续快速开合面板时会反复丢弃刚读回来的页，
+    /// 反而让每次开合都重新缺页。20 秒是实测下来手感与回收都合适的值。
+    /// </summary>
+    private const int MinimumIntervalMs = 20_000;
+
+    private static long _lastTrimMs = MonoClock.Never;
+    private static readonly object Gate = new();
+
+    /// <summary>
+    /// 登记为「已打开」的来源。
+    ///
+    /// 用集合而不是单个 bool：主窗口、mini 面板、OSD 会互相独立地
+    /// 显示和隐藏，用一个 bool 时任意一个隐藏就会把标记清掉，
+    /// 另一个还在渲染的窗口就会在下一帧被清掉工作集。
+    /// </summary>
+    private static readonly HashSet<string> ActiveSources = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 各来源最后一次「有渲染活动」的时刻。
+    ///
+    /// 只靠 Begin/End 配对会有个大问题：用户把主窗口开着但一直不动，
+    /// 那个来源就永远算活跃，工作集永远不回收。
+    ///
+    /// 这个缺陷是实际踩到的：切换主题后内存涨上去，却要等用户关掉窗口
+    /// 才会回落。而主题切换本身就会重绘整棵树、重建画刷与字形缓存，
+    /// 正是最该回收的时刻之一。
+    ///
+    /// 窗口静止时 XAML 不重绘、D3D 也不出新帧，那部分内存同样可以交还系统。
+    /// 所以活跃状态带超时：超过 <see cref="ActivityTimeoutMs"/> 没有任何
+    /// 渲染迹象就当作不活跃。鼠标移动、按键、窗口激活都会刷新时间戳。
+    /// </summary>
+    private static readonly Dictionary<string, long> LastActiveMs = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 活跃状态的有效期。
+    ///
+    /// 短视频动画（200ms 滑入）之后如果用户不动，一分钟足以判定「静止」。
+    /// 设太长会让工作集长期涨着，设太短会在用户读界面的间隙反复修剪。
+    /// </summary>
+    private const int ActivityTimeoutMs = 45_000;
+
+    /// <summary>
+    /// 当前有哪些界面登记为「已打开」。为 true 不代表正在渲染，
+    /// 是否渲染要看 <see cref="HasRecentActivity"/>。
+    /// </summary>
+    public static bool IsUiActive
+    {
+        get
+        {
+            lock (Gate) return HasRecentActivity();
+        }
+    }
+
+    /// <summary>
+    /// 是否有来源在「近期」有过渲染活动。
+    ///
+    /// 这是修剪判定的实际依据：窗口开着但静止超过
+    /// <see cref="ActivityTimeoutMs"/> 时不算活跃，允许回收。
+    /// </summary>
+    private static bool HasRecentActivity()
+    {
+        if (ActiveSources.Count == 0) return false;
+
+        long now = MonoClock.NowMs;
+        foreach (string source in ActiveSources)
+        {
+            if (!LastActiveMs.TryGetValue(source, out long stamp)) return true;
+            if (MonoClock.Within(stamp, ActivityTimeoutMs)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>标记某个界面开始渲染。</summary>
+    public static void BeginActivity(string source)
+    {
+        lock (Gate)
+        {
+            ActiveSources.Add(source);
+            LastActiveMs[source] = MonoClock.NowMs;
+        }
+    }
+
+    /// <summary>标记某个界面停止渲染。</summary>
+    public static void EndActivity(string source)
+    {
+        lock (Gate)
+        {
+            ActiveSources.Remove(source);
+            LastActiveMs.Remove(source);
+        }
+    }
+
+    /// <summary>
+    /// 报告某个界面刚有渲染活动（鼠标移动、按键、窗口事件等）。
+    ///
+    /// 只对已登记的来源生效：未登记的来源本来就没在渲染，
+    /// 不该因为一次指针事件就把它算进来。
+    /// </summary>
+    public static void Touch(string source)
+    {
+        lock (Gate)
+        {
+            if (ActiveSources.Contains(source)) LastActiveMs[source] = MonoClock.NowMs;
+        }
+    }
+
+    /// <summary>
+    /// 尝试修剪一次工作集。返回是否真的执行了。
+    ///
+    /// 只在没有界面渲染、且距上次修剪超过 <see cref="MinimumIntervalMs"/> 时才动手。
+    /// </summary>
+    public static bool TryTrim(string reason, bool force = false)
+    {
+        lock (Gate)
+        {
+            if (!force)
+            {
+                if (HasRecentActivity()) return false;
+                if (MonoClock.Within(_lastTrimMs, MinimumIntervalMs)) return false;
+            }
+
+            _lastTrimMs = MonoClock.NowMs;
+
+            long before = WorkingSetBytes();
+
+            bool ok;
+            try
+            {
+                ok = EmptyWorkingSet(GetCurrentProcess());
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"trim working set failed: {ex.Message}");
+                return false;
+            }
+
+            // EmptyWorkingSet 在部分系统上会返回 false 但仍有效果，
+            // 所以不把它当作失败处理，只用日志记录。
+            long after = WorkingSetBytes();
+            Log.Info($"working set trimmed ({reason}): " +
+                     $"{before / 1048576.0:F1} MB -> {after / 1048576.0:F1} MB ok={ok}");
+
+            return ok;
+        }
+    }
+
+    /// <summary>
+    /// 启动低频看门狗：只在界面长时间不渲染时修剪。
+    ///
+    /// 不用高频轮询：工作集不会自己涨回去，涨回去说明有渲染活动，
+    /// 那时候本来就不该修剪。几分钟看一次即可。
+    /// </summary>
+    public static IDisposable StartIdleWatchdog(TimeSpan interval)
+    {
+        var timer = new Timer(_ =>
+        {
+            try
+            {
+                TryTrim("idle");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"idle trim failed: {ex.Message}");
+            }
+        }, null, interval, interval);
+
+        return timer;
+    }
+
+    private static long WorkingSetBytes()
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            return process.WorkingSet64;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+}

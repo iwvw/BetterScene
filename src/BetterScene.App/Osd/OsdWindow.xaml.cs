@@ -355,6 +355,10 @@ public sealed partial class OsdWindow : Window
 
                 // 下次 Show 前把窗口摆回可见位置，避免从屏幕外弹出。
                 SlideTo(_shownRect);
+
+                // OSD 已收起，摘掉活动标记。这是「显示完自己收」的窗口，
+                // 漏掉这一步会让工作集修剪永久失效。
+                MemoryTrimmer.EndActivity(ActivitySources.Osd);
             });
     }
 
@@ -569,6 +573,11 @@ public sealed partial class OsdWindow : Window
         // 必须先退订：静态事件会持有这个窗口实例，
         // 之后任何窗口的 DPI 变化都会回调到已销毁的对象上。
         WindowChrome.DpiChanged -= OnDpiChanged;
+
+        // 窗口被销毁时也要摘掉活动标记：
+        // 如果它是在显示状态下被销毁的（比如渲染出错后重建），
+        // 标记就会永远留着，导致工作集修剪彻底失效。
+        MemoryTrimmer.EndActivity(ActivitySources.Osd);
 
         _hideTimer.Stop();
         _topTimer.Stop();

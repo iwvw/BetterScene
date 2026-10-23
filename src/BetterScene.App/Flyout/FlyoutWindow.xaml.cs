@@ -204,6 +204,9 @@ public sealed partial class FlyoutWindow : Window
         bool wasHidden = _state is VisState.Hidden;
         _state = VisState.Showing;
 
+        // 马上要开始渲染动画，登记活动来源，避免这时被清工作集。
+        MemoryTrimmer.BeginActivity(ActivitySources.Flyout);
+
         // 入场过程中先冻结卡片动画，等窗口落定后再播。
         Panel.SetWindowSettled(false);
 
@@ -294,6 +297,25 @@ public sealed partial class FlyoutWindow : Window
         _windowShown = false;
         _appWindow.MoveAndResize(_targetRect);
         _state = VisState.Hidden;
+
+        // 面板已收起、不再渲染，回收工作集。
+        // 面板是频繁开合的窗口，每次收起都留下一些 D3D/字形缓存，
+        // 不主动还回去的话它们会一直驻留。
+        MemoryTrimmer.EndActivity(ActivitySources.Flyout);
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            MemoryTrimmer.TryTrim("flyout hidden");
+        });
+
+        // 这里刻意不触发 Hidden。
+        //
+        // Hidden 的唯一订阅者是 MainWindow，它收到后会把 _flyout 置空，
+        // 下次按热键就会新建一个窗口；而这个已收起的旧窗口没有任何人
+        // 调 CloseFlyout 销毁，AppWindow / XAML 树 / HWND 全部留下，
+        // 开合一次泄漏一个窗口。
+        //
+        // 面板的设计是「隐藏但不销毁、下次复用」，所以收起时保持引用不变，
+        // 只有拖动关闭那条路径才通知外部（那条路径本来就配合重建）。
     }
 
     private void OnContentSizeChanged()
@@ -438,6 +460,19 @@ public sealed partial class FlyoutWindow : Window
             _windowShown = false;
             _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
             _appWindow.MoveAndResize(_targetRect);
+
+            // 拖动关闭走的是另一条路径，同样要摘掉活动标记并回收。
+            MemoryTrimmer.EndActivity(ActivitySources.Flyout);
+            MemoryTrimmer.TryTrim("flyout dismissed");
+
+            // 这条路径会把 _flyout 置空（MainWindow 的 Hidden 订阅），
+            // 之后不会有人再引用这个窗口，必须销毁，
+            // 否则 AppWindow / XAML 树 / HWND 全部留下，关一次泄漏一个窗口。
+            //
+            // 延后到下一个消息循环再销毁：现在正处在 WindowSlider 的
+            // 动画回调里，同帧 Dispose 那个 slider 会把它自己的回调链拆掉。
+            _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, CloseFlyout);
+
             Hidden?.Invoke(this, EventArgs.Empty);
         });
     }

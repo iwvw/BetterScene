@@ -41,6 +41,19 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     /// LevelText 等其它地方仍用 BrightnessHub.TitleOf（带品牌）。</summary>
     public string Title { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// 迷你面板卡片标题：品牌 + 型号。
+    ///
+    /// 迷你面板没有显示器页那样的品牌/型号双行布局，只有一行标题，
+    /// 所以这里要把品牌带上——否则只显示 "2708G5" 这种纯型号，
+    /// 用户看不出是哪台显示器。
+    ///
+    /// 与 <see cref="Title"/> 的分工：
+    /// - Title：显示器页/概览页用，品牌在下方单独一行，标题只留型号
+    /// - DisplayTitle：迷你面板用，单行展示，必须自带品牌
+    /// </summary>
+    public string DisplayTitle { get; private set; } = string.Empty;
+
     public string Subtitle { get; private set; } = string.Empty;
 
     public string Icon { get; private set; } = "\uE7F4";
@@ -371,6 +384,11 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     {
         // 标题不再带品牌前缀：品牌已经在下面单独一行，重复了反而啰嗦。
         Title = DisplayNaming.Titled(target);
+
+        // 迷你面板只有一行标题，必须自带品牌，
+        // 否则只显示 "2708G5" 这种纯型号，看不出是哪台屏。
+        DisplayTitle = DisplayNaming.Title(target);
+
         Icon = DisplayNaming.Icon(target);
         Subtitle = Describe(target);
         CanControl = target.Backend != DisplayBackend.None;
@@ -401,14 +419,24 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         // 保存一份引用，后续切换分辨率/HDR 时要用它定位物理输出。
         _target = target;
 
+        _probeChanged = false;
+
         RefreshDisplayMode(target);
         RefreshHdr(target);
         RefreshScale(target);
 
-        Log.Info($"display rows: {target.Model} gdi={target.GdiName} " +
-                 $"hdr={Hdr.IsSupported} modes={AvailableModes.Count} scale={ScalePercent?.ToString() ?? "null"} " +
-                 $"miniHdr={MiniHdrVisibility} miniRes={MiniResolutionVisibility} " +
-                 $"miniHz={MiniRefreshRateVisibility} miniScale={MiniScaleVisibility}");
+        bool refreshed = _probeChanged;
+        // 诊断行只在真正重新探测之后打一次。
+        // Update() 会随每次界面刷新被调用（拖动滑块时每帧一次），
+        // 无条件打印会让日志按秒级增长，对排查问题毫无帮助——重复行没有信息量。
+        if (refreshed)
+        {
+            Log.Info($"display rows: {target.Model} gdi={target.GdiName} " +
+                     $"hdr={Hdr.IsSupported} modes={AvailableModes.Count} scale={ScalePercent?.ToString() ?? "null"} " +
+                     $"miniHdr={MiniHdrVisibility} miniRes={MiniResolutionVisibility} " +
+                     $"miniHz={MiniRefreshRateVisibility} miniScale={MiniScaleVisibility}");
+        }
+
         // 标题行右侧的尺寸。
         double inches = ScreenInches(target);
         SizeText = inches > 0 ? $"{inches:0.#} 英寸" : string.Empty;
@@ -471,6 +499,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
         Hdr = next;
         _hdrRead = true;
+        _probeChanged = true;
 
         OnPropertyChanged(nameof(Hdr));
         OnPropertyChanged(nameof(HdrVisibility));
@@ -481,6 +510,14 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     }
 
     private bool _hdrRead;
+
+    /// <summary>
+    /// 本轮 Update 里是否有任何一项真的重新探测过（而不是命中指纹缓存）。
+    ///
+    /// 用来决定要不要打印诊断日志：拖动滑块时 Update 每帧都跑，
+    /// 但三项探测全部命中缓存、数据没变，没有必要每条都写一行日志。
+    /// </summary>
+    private bool _probeChanged;
 
     /// <summary>
     /// 切换 HDR。
@@ -546,6 +583,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
         _modeSignature = signature;
         _modeRead = true;
+        _probeChanged = true;
 
         CurrentMode = mode;
         AvailableModes = DisplayModeControl.Enumerate(target);
@@ -620,6 +658,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
         ScalePercent = next;
         _scaleRead = true;
+        _probeChanged = true;
 
         OnPropertyChanged(nameof(ScalePercent));
         OnPropertyChanged(nameof(ScaleVisibility));
@@ -664,6 +703,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     public void UpdateGroup(int level, bool canControl)
     {
         Title = "所有显示器";
+        DisplayTitle = "所有显示器";
         Subtitle = canControl ? "亮度同步调节" : "不可控";
         Icon = "\uE71B";
         CanControl = canControl;
@@ -967,6 +1007,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         _suppress = false;
 
         OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(DisplayTitle));
         OnPropertyChanged(nameof(Subtitle));
         OnPropertyChanged(nameof(Icon));
         OnPropertyChanged(nameof(CanControl));

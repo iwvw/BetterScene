@@ -332,12 +332,40 @@ public static class ThemeSwitcher
             {
                 await Task.Delay(1200).ConfigureAwait(false);
                 ThemeRepair.ReapplyCurrentTheme();
+
+                // 修补完成 = 这一轮主题切换真正结束（重绘、画刷重建、字形缓存
+                // 全部落定）。工作集回收要等这一刻之后才有意义。
+                NotifySettled();
             }
             catch (Exception ex)
             {
                 Log.Warn($"theme repair failed: {ex.Message}");
             }
         });
+    }
+
+    /// <summary>
+    /// 一轮主题切换彻底结束时触发（注册表已写、<see cref="Applied"/> 已广播、
+    /// 延迟修补 <see cref="ThemeRepair.ReapplyCurrentTheme"/> 也跑完了）。
+    ///
+    /// 与 <see cref="Applied"/> 的区别：Applied 只代表「注册表写完」，
+    /// 此时界面刚收到通知、还没重绘完；而且之后 1200ms 还会再修补一次。
+    /// 想在最重的渲染都结束之后再做事（比如回收工作集），订阅这里。
+    ///
+    /// 注意：在后台线程上触发，订阅方自己负责切回 UI 线程。
+    /// </summary>
+    public static event Action? Settled;
+
+    private static void NotifySettled()
+    {
+        try
+        {
+            Settled?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"theme settled handler failed: {ex.Message}");
+        }
     }
 
     public static bool Apply(SystemTheme theme) => Apply(theme, nudge: false);

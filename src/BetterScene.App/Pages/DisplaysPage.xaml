@@ -127,18 +127,23 @@
 
                                     <tk:SettingsCard Header="亮度范围">
                                         <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <!-- 用 Inline 而不是 Compact：Compact 的增减箭头
+                                                 平时隐藏、聚焦时才弹出一个浮层，这个浮层会盖住
+                                                 下面的内容，看起来像是"点了上面的按钮却触发了
+                                                 下面的输入"。Inline 把箭头常驻在框内右侧，
+                                                 不占额外空间、也不会遮挡。 -->
                                             <NumberBox Value="{x:Bind RangeLow, Mode=TwoWay}"
                                                        Minimum="0"
                                                        Maximum="100"
-                                                       SpinButtonPlacementMode="Compact"
-                                                       Width="110"
+                                                       SpinButtonPlacementMode="Inline"
+                                                       Width="130"
                                                        SmallChange="1"
                                                        Header="最低" />
                                             <NumberBox Value="{x:Bind RangeHigh, Mode=TwoWay}"
                                                        Minimum="0"
                                                        Maximum="100"
-                                                       SpinButtonPlacementMode="Compact"
-                                                       Width="110"
+                                                       SpinButtonPlacementMode="Inline"
+                                                       Width="130"
                                                        SmallChange="1"
                                                        Header="最高" />
                                             <Button Content="重置"

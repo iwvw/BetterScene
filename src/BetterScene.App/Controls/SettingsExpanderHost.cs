@@ -40,7 +40,9 @@ internal sealed class SettingsExpanderHost
 
         _expander = new SettingsExpander
         {
-            Header = item.Title,
+            // 概览页卡片也只有一行标题（品牌没有单独一行），
+            // 所以和迷你面板一样用带品牌的 DisplayTitle。
+            Header = item.DisplayTitle,
             Description = item.Subtitle,
             // 间距统一交给外层 StackPanel 的 Spacing 控制，
             // 这里再加外边距会让卡片之间的距离和上方"当前场景"不一致。
@@ -57,7 +59,7 @@ internal sealed class SettingsExpanderHost
                 _brightnessText.Text = item.LevelText;
             }
 
-            if (e.PropertyName == nameof(DisplaySliderItem.Title)) _expander.Header = item.Title;
+            if (e.PropertyName == nameof(DisplaySliderItem.DisplayTitle)) _expander.Header = item.DisplayTitle;
             if (e.PropertyName == nameof(DisplaySliderItem.Subtitle)) _expander.Description = item.Subtitle;
             if (e.PropertyName == nameof(DisplaySliderItem.CanControl)) _brightness.IsEnabled = item.CanControl;
         };
@@ -76,9 +78,9 @@ internal sealed class SettingsExpanderHost
         // 逐项比对再赋值：WinUI 的属性 setter 即使值相同也会走
         // 依赖属性通知链，概览页在拖动亮度时每帧都会调到这里，
         // 无脑赋值会让滑块拖动明显发涩。
-        if (!string.Equals(_expander.Header?.ToString(), item.Title, StringComparison.Ordinal))
+        if (!string.Equals(_expander.Header?.ToString(), item.DisplayTitle, StringComparison.Ordinal))
         {
-            _expander.Header = item.Title;
+            _expander.Header = item.DisplayTitle;
         }
 
         if (!string.Equals(_expander.Description?.ToString(), item.Subtitle, StringComparison.Ordinal))

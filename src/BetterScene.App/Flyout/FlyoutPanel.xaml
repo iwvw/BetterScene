@@ -180,11 +180,13 @@
                                               FontSize="14"
                                               Glyph="{x:Bind Icon, Mode=OneWay}" />
 
+                                    <!-- 迷你面板只有一行标题，用带品牌的 DisplayTitle；
+                                         显示器页那种品牌/型号双行布局才用 Title。 -->
                                     <TextBlock Grid.Column="1"
                                                VerticalAlignment="Center"
                                                Style="{StaticResource BodyStrongTextBlockStyle}"
                                                TextTrimming="CharacterEllipsis"
-                                               Text="{x:Bind Title, Mode=OneWay}" />
+                                               Text="{x:Bind DisplayTitle, Mode=OneWay}" />
 
                                     <!-- 尺寸靠右。取不到 EDID 物理尺寸时整列隐藏。 -->
                                     <TextBlock Grid.Column="2"

@@ -262,7 +262,18 @@ public sealed partial class DisplaysPage : Page
             if (sender is Button b)
             {
                 b.Content = "读取中…";
-                b.IsEnabled = false;
+
+                // 这里用 IsHitTestVisible 而不是 IsEnabled。
+                //
+                // 禁用被点击的按钮会把它从焦点链里移除，WinUI 随即把焦点
+                // 顺移给下一个可聚焦控件——也就是下方「亮度范围」的 NumberBox。
+                // 而 NumberBox 的 SpinButtonPlacementMode=Compact 在获得焦点时
+                // 会弹出上下箭头浮层，表现为「点了上面的按钮，下面冒出个输入框」。
+                //
+                // IsHitTestVisible=false 只是不接收点击，不影响焦点与外观，
+                // 不会引发焦点转移。防连点本来就由 _miniPreparing 这个守卫负责，
+                // 不依赖按钮禁用。
+                b.IsHitTestVisible = false;
             }
 
             try
@@ -274,7 +285,7 @@ public sealed partial class DisplaysPage : Page
                 if (sender is Button restore)
                 {
                     restore.Content = original;
-                    restore.IsEnabled = true;
+                    restore.IsHitTestVisible = true;
                 }
 
                 _miniPreparing = null;

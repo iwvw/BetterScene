@@ -6,6 +6,7 @@ using Microsoft.UI;
 using System.IO;
 using Windows.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -70,6 +71,17 @@ public sealed partial class MainWindow : Window
         NavView.SelectionChanged += NavView_SelectionChanged;
         Activated += OnActivated;
 
+        // 任何指针活动都说明界面在动，刷新活跃时间戳。
+        // 只挂一次在根元素上：XAML 的指针事件会从命中的子元素冒泡上来。
+        if (Content is UIElement root)
+        {
+            root.AddHandler(
+                UIElement.PointerMovedEvent,
+                new Microsoft.UI.Xaml.Input.PointerEventHandler(
+                    (_, _) => MemoryTrimmer.Touch(ActivitySources.MainWindow)),
+                handledEventsToo: true);
+        }
+
         // 先建好首屏，避免「最小化启动、之后才唤回窗口」时出现空白。
         LoadInitialPage();
     }
@@ -77,6 +89,9 @@ public sealed partial class MainWindow : Window
     private void OnActivated(object sender, WindowActivatedEventArgs args)
     {
         LoadInitialPage();
+
+        // 用户回到窗口，刷新活跃时间戳，避免这时被回收工作集造成卡顿。
+        MemoryTrimmer.Touch(ActivitySources.MainWindow);
 
         // 任务栏按钮在窗口首次显示后才创建，构造函数里调 SetIcon 会被丢掉，
         // 表现为应用栏图标和 Alt+Tab 预览里还是默认图标，切一次主题才正常。
@@ -149,6 +164,10 @@ public sealed partial class MainWindow : Window
 
     public void ShowAndActivate()
     {
+        // 窗口要开始渲染了，先登记活动来源，
+        // 否则空闲看门狗可能在用户刚点开的瞬间清工作集，造成首帧卡顿。
+        MemoryTrimmer.BeginActivity(ActivitySources.MainWindow);
+
         _appWindow?.Show();
         Activate();
         if (_appWindow is not null && _appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
@@ -175,6 +194,56 @@ public sealed partial class MainWindow : Window
         ApplyBrandIcon(effective);
         _tray.ApplyTheme(effective);
         UpdateTrayState();
+
+        ScheduleThemeTrim();
+    }
+
+    /// <summary>
+    /// 主题切换后安排一次工作集回收。
+    ///
+    /// 换主题会重绘整棵可视化树：新的画刷、新的字形缓存、
+    /// 系统材质（亚克力/Mica）重建、标题栏与任务栏图标重设。
+    /// 旧主题那一套资源随即变成垃圾，但它们占的原生页
+    /// 不会因为「没人引用」就被系统收回，得主动还。
+    ///
+    /// 实测切一次主题能让工作集涨几十兆，而在这之前只有
+    /// 「窗口隐藏」或「空闲看门狗」才会回收——用快捷键连着切几次主题，
+    /// 数字就一直挂着不降。
+    ///
+    /// 时机不能靠猜：快捷键切场景的实际链路是
+    /// <c>ApplyThemeImmediate</c> → 900ms 后才真正写注册表 →
+    /// 再 1200ms 后 <c>ThemeRepair</c> 又重绘一次。
+    /// 在这里立即计时 2.5 秒会撞上第一次重绘，清早了等于白清。
+    /// 所以改成由 <see cref="ThemeSwitcher.Settled"/> 驱动——
+    /// 那个事件在整轮切换彻底结束后才发。
+    /// </summary>
+    private static void ScheduleThemeTrim()
+    {
+        // 幂等：多次订阅会让一次切换触发多次回收。
+        if (_themeTrimHooked) return;
+        _themeTrimHooked = true;
+
+        ThemeSwitcher.Settled += OnThemeSettled;
+    }
+
+    private static bool _themeTrimHooked;
+
+    private static void OnThemeSettled()
+    {
+        // 再让出一拍：Settled 触发时修补刚返回，XAML 可能还有一两个
+        // 待处理的重绘批次没跑完。
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(600).ConfigureAwait(false);
+                MemoryTrimmer.TryTrim("theme switched", force: true);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"theme trim failed: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -408,6 +477,8 @@ public sealed partial class MainWindow : Window
         ApplyCaptionButtonTheme(effective);
         ApplyBrandIcon(effective);
         UpdateTrayStateFor(theme);
+
+        ScheduleThemeTrim();
     }
 
     public void ApplyBackdrop(string style)
@@ -417,6 +488,10 @@ public sealed partial class MainWindow : Window
         // mini 面板和 OSD 必须一起换，否则会出现"主窗口是 Mica、面板还是亚克力"的错位。
         _flyout?.ApplyBackdrop(style);
         App.Osd?.ApplyBackdrop(style);
+
+        // 换材质会销毁并重建 SystemBackdrop（亚克力/Mica 各自一整块合成表面），
+        // 旧的那块随即变成几十兆的原生资源，同样需要主动还回去。
+        ScheduleThemeTrim();
     }
 
     private void TrySetBackdrop(string style)
@@ -504,6 +579,17 @@ public sealed partial class MainWindow : Window
         {
             _appWindow?.Hide();
         }
+
+        // 窗口隐藏后界面不再渲染，是回收工作集的最佳时机。
+        MemoryTrimmer.EndActivity(ActivitySources.MainWindow);
+
+        // 稍等一拍再修剪：Hide() 之后 XAML 还要跑完收起动画、
+        // 释放交换链，立刻清工作集会和那批释放操作抢同一批页。
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
+        {
+            await Task.Delay(1200);
+            MemoryTrimmer.TryTrim("window hidden");
+        });
     }
 
     /// <summary>
@@ -517,6 +603,11 @@ public sealed partial class MainWindow : Window
     private void ExitFromTray()
     {
         _forceExit = true;
+
+        // 退订主题事件：它是静态事件，会持有这个窗口类型。
+        // 进程马上就退出了，影响有限，但订阅-退订成对是基本纪律。
+        ThemeSwitcher.Settled -= OnThemeSettled;
+        _themeTrimHooked = false;
 
         // 先摘掉托盘图标，避免退出过程中残留一个点不动的图标。
         _tray.Dispose();

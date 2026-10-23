@@ -37,6 +37,9 @@ public partial class App : Application
 
     public static OsdWindow? Osd { get; private set; }
 
+    /// <summary>工作集回收的低频看门狗，只在界面长时间隐藏时生效。</summary>
+    private static IDisposable? _memoryWatchdog;
+
     public App()
         : this(startMinimized: false)
     {
@@ -54,6 +57,10 @@ public partial class App : Application
 
         // 命令行参数优先；没有参数时看设置里是否勾了「启动时最小化到托盘」。
         bool minimized = startMinimized || Settings.StartMinimized;
+
+        // 最小化启动时界面全程不渲染，允许立即修剪工作集；
+        // 正常启动则先标记主窗口活跃，等它真正隐藏后放开。
+        if (!minimized) MemoryTrimmer.BeginActivity(ActivitySources.MainWindow);
 
         // 先把上次读到的控制项载进内存，mini 面板/概览页首帧就能画全，
         // 不用等 DDC（一次 3–4 秒）。
@@ -76,6 +83,7 @@ public partial class App : Application
         StartInput();
         StartAutoScene();
         StartUpdates();
+        StartMemoryWatchdog();
 
         BrightnessHub.Changed += OnBrightnessChanged;
 
@@ -142,6 +150,25 @@ public partial class App : Application
         Updates.AutoInstallStarting += info => Main?.NotifyAutoUpdateStarting(info);
 
         Updates.Start();
+    }
+
+    /// <summary>
+    /// 工作集回收看门狗。
+    ///
+    /// 本程序托管堆只有 3 MB，工作集却常在一百多兆，
+    /// 差额是 WinUI/D3D/显卡驱动申请的渲染相关原生页。
+    /// 界面隐藏后这些页就没有用了，但系统不会主动收回，
+    /// 要等到物理内存吃紧才换出——在那之前任务管理器里一直显示几十上百兆。
+    ///
+    /// 每 90 秒检查一次，只在「确实没有任何界面在渲染」时修剪。
+    /// 之所以不是更短：后台定时器（场景服务 30 秒、更新调度 1 分钟、
+    /// worker 心跳 5 秒）会不断把少量页碰回来，修剪频率超过它们的
+    /// 触发频率没有意义，反而白做缺页。90 秒能保证这些周期性触碰
+    /// 攒下的量都被清掉。
+    /// </summary>
+    private static void StartMemoryWatchdog()
+    {
+        _memoryWatchdog = MemoryTrimmer.StartIdleWatchdog(TimeSpan.FromSeconds(90));
     }
 
     public static void ApplyAutoSceneSetting()
@@ -289,6 +316,9 @@ public partial class App : Application
         try
         {
             Log.Info($"osd present: display={change.DisplayId} level={change.Level}");
+
+            // OSD 正在渲染，登记活动来源，禁止此时修剪工作集（否则动画会明显掉帧）。
+            MemoryTrimmer.BeginActivity(ActivitySources.Osd);
             Osd ??= new OsdWindow();
 
             // OSD 上正在拖动进度条时，它自己就是亮度变化的发起者。
@@ -360,6 +390,9 @@ public partial class App : Application
         DisplayBus.Detach();
         Displays?.Dispose();
         Displays = null;
+
+        _memoryWatchdog?.Dispose();
+        _memoryWatchdog = null;
     }
 
     private void ShowFromOtherProcess()
