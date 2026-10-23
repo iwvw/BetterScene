@@ -14,6 +14,16 @@
   <img src="https://img.shields.io/github/v/release/iwvw/BetterScene" alt="Release" />
 </p>
 
+<p align="center">
+  <img src="docs/images/overview.png" width="720" alt="概览页" />
+</p>
+
+<p align="center">
+  <img src="docs/images/displays.png" width="400" alt="显示器页" />
+  <img src="docs/images/mini-panel.png" width="196" alt="迷你面板" />
+  <img src="docs/images/linked-mode.png" width="196" alt="关联模式" />
+</p>
+
 ---
 
 ## 这是什么
@@ -110,7 +120,6 @@ BetterScene.slnx
 ├─ src/BetterScene.App/        WinUI 3 主界面、迷你面板、托盘
 ├─ src/BetterScene.Core/       共享逻辑：设置、主题、日志、显示器控制
 ├─ src/BetterScene.Displays/   显示器工作者（独立进程）
-├─ src/BetterScene.Host/       常驻核心（当前为占位骨架，未启用）
 ├─ tests/BetterScene.Core.Tests/
 └─ build/                      打包与资源生成脚本
 ```
