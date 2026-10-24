@@ -243,14 +243,17 @@ public sealed partial class FlyoutPanel : UserControl
     }
 
     /// <summary>扩展控制项读回来了，填进对应的显示器卡片。</summary>
-    private void OnControlsRead(DisplayControls controls)
-    {
-        // 先缓存：关联模式下 _items 里没有单台显示器，数据也不能丢。
-        DisplayControlCache.Set(controls.DisplayId, controls);
+    private void OnControlsRead(DisplayControls controls)    {
+        // 先缓存并取回**合并后**的清单。
+        //
+        // 必须用返回值：这次读到的可能只是残缺的一部分，
+        // 直接用 controls 会让面板上的控制项凭空消失
+        // （缓存里明明还有完整的 5 项）。
+        DisplayControls merged = DisplayControlCache.Set(controls.DisplayId, controls);
 
         _ = DispatcherQueue.TryEnqueue(() =>
         {
-            if (!_items.TryGetValue(controls.DisplayId, out DisplaySliderItem? item)) return;
+            if (!_items.TryGetValue(merged.DisplayId, out DisplaySliderItem? item)) return;
 
             // 拖动中不重建控件，否则会把用户正在拖的滑块换掉。
             if (item.MiniSliders.Any(row => row.IsDragging)
@@ -262,9 +265,9 @@ public sealed partial class FlyoutPanel : UserControl
 
             // 写入必须绑定到这台显示器；之前用了一个从未赋值的字段，
             // 导致 mini 面板上所有调节都被静默丢弃。
-            string displayId = controls.DisplayId;
+            string displayId = merged.DisplayId;
 
-            item.UpdateExtras(controls, (code, value) =>
+            item.UpdateExtras(merged, (code, value) =>
                 DisplayBus.WriteControl(displayId, code, value));
 
             // 卡片高度变了，通知窗口重新布局。

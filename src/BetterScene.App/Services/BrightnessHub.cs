@@ -33,13 +33,22 @@ public static class BrightnessHub
 
         if (target is not null && UsesGammaUnderHdr(target) && IsHdrActive(target))
         {
-            if (GammaBrightness.TrySet(target.GdiName, level, out _))
+            if (GammaBrightness.TrySet(target.GdiName, level, out string? gammaError))
             {
+                // 缓存里存的就是滑块值 = gamma 刻度 = 白点百分比，
+                // 三者现在统一成一套（见 GammaBrightness 顶部的说明）。
                 PrimeSdrCache(id, level);
+
+                Log.Debug($"gamma brightness set {target.GdiName} level={level}");
                 return;
             }
 
             // gamma 也失败才退回原通道，至少不会完全失控。
+            //
+            // 这条日志很重要：HDR 下 DDC 写入是无效的（固件锁死背光），
+            // 一旦走到这里，用户看到的就只是"调了没反应"。
+            // 之前这里完全静默，导致"前几次调节不生效"无法定位。
+            Log.Warn($"gamma brightness failed for {target.GdiName} level={level} ({gammaError}), falling back to DDC");
         }
 
         if (RawWriter is { } writer) writer(id, level);
@@ -106,14 +115,18 @@ public static class BrightnessHub
 
     public static int LevelOf(DisplayTarget target)
     {
-        // HDR 模式下外接屏的背光被锁定，记忆里的值对应的是 gamma 曲线，
-        // 直接读系统当前 ramp 才不会和滑块显示脱节。
+        // HDR 模式下外接屏的背光被锁定，亮度实际由 gamma ramp 承担，
+        // 直接读当前 ramp 才不会和画面脱节。
+        //
+        // 这里返回的就是"实际观感"（白点百分比）：
+        // 用户选了"滑块显示实际观感"，所以 HDR 开关时滑块会跳到换算后的位置，
+        // 而不是停在设置里记的那个值。
         //
         // WMI 内屏不走这里：它调的是真背光，滑块值就是记忆值，
         // 和没有 HDR 时完全一样（也避免在 UI 线程上查 WMI）。
-        if (IsHdrActive(target) && UsesGammaUnderHdr(target) && ReadGammaCached(target) is { } hdrLevel)
+        if (IsHdrActive(target) && UsesGammaUnderHdr(target) && ReadGammaCached(target) is { } gammaLevel)
         {
-            return Math.Clamp(hdrLevel, 0, 100);
+            return Math.Clamp(gammaLevel, 0, 100);
         }
 
         return App.Settings.Brightness.TryGetValue(target.Id, out int saved)
@@ -145,6 +158,12 @@ public static class BrightnessHub
         return value;
     }
 
+    /// <summary>
+    /// 预填 gamma 读数缓存。
+    ///
+    /// 参数就是滑块值（0–100），也是 gamma 刻度和白点百分比——
+    /// 三者统一成一套，见 <see cref="GammaBrightness"/> 顶部的说明。
+    /// </summary>
     private static void PrimeSdrCache(string id, int level)
     {
         _sdrCacheId = id;
@@ -197,26 +216,66 @@ public static class BrightnessHub
         SettingsStore.SaveDeferred(App.Settings);
     }
 
+    /// <summary>
+    /// 把亮度夹到这台显示器当前真正能表达的范围。
+    ///
+    /// HDR 下外接屏走 gamma，而驱动拒绝 50% 以下的写入
+    /// （实测：写 0.4 及以下返回失败，读回值停在 50%）。
+    /// 不夹的话，界面会显示 30% 而画面其实是 50%，
+    /// 用户以为滑块坏了。
+    ///
+    /// 滑块、快捷键、关联模式、场景应用最终都会经过这里。
+    /// </summary>
+    public static int ClampToChannel(DisplayTarget target, int level)
+    {
+        int clamped = Math.Clamp(level, 0, 100);
+
+        if (UsesGammaUnderHdr(target) && IsHdrActive(target))
+        {
+            int floor = (int)GammaBrightness.MinimumDriverScale;
+            if (clamped < floor) clamped = floor;
+        }
+
+        return clamped;
+    }
+
     public static void Set(string id, int level, bool notify = true)
     {
         DisplayTarget? target = Find(id);
         BrightnessRange range = target is null ? FullRange : RangeOf(target);
-        int clamped = range.Clamp(level);
 
-        bool changed = !App.Settings.Brightness.TryGetValue(id, out int previous) || previous != clamped;
+        // requested 是用户意图，applied 是这台屏当前真能表达的值。
+        //
+        // 两者必须分开：HDR 下 gamma 到不了 50% 以下，如果直接把夹过的值
+        // 写回设置，用户原本的 30% 就被永久改成 50%，关掉 HDR 后也回不去。
+        int requested = range.Clamp(level);
+        int applied = target is not null ? ClampToChannel(target, requested) : requested;
 
+        bool changed = !App.Settings.Brightness.TryGetValue(id, out int previous) || previous != requested;
+
+        // 值没变也要写一次硬件。
+        //
+        // 之前的逻辑是"值没变就跳过"，问题在于：程序启动后硬件状态
+        // 未必等于记忆值（上次退出时的写入可能失败、显示器可能被
+        // 实体按键改过、HDR 切换后通道也变了）。这时用户第一次拖回
+        // 记忆值所在的位置，就会被判定为"没变化"而不下发，
+        // 表现为"前几次调节不生效"。
+        //
+        // 收敛器本身有去重（写完检查目标是否又变了），
+        // 多写一次不会造成额外的硬件压力。
         if (changed)
         {
-            App.Settings.Brightness[id] = clamped;
+            App.Settings.Brightness[id] = requested;
             SettingsStore.SaveDeferred(App.Settings);
-
-            // 交给收敛器：它保证最后一个目标值一定落地。
-            Coalescer.SetTarget(id, clamped);
         }
+
+        Log.Debug($"brightness set {id} requested={requested} applied={applied} changed={changed} notify={notify}");
+
+        Coalescer.SetTarget(id, applied);
 
         if (!notify) return;
 
-        Changed?.Invoke(new BrightnessChange(id, target is null ? id : TitleOf(target), clamped));
+        Changed?.Invoke(new BrightnessChange(id, target is null ? id : TitleOf(target), applied));
     }
 
     public static bool Step(string id, int delta)
@@ -230,7 +289,12 @@ public static class BrightnessHub
             return true;
         }
 
-        Set(target.Id, LevelOf(target) + delta);
+        // 基于意图值累加，理由见 StepAll。
+        int intent = App.Settings.Brightness.TryGetValue(target.Id, out int saved)
+            ? Math.Clamp(saved, 0, 100)
+            : Math.Clamp(LevelOf(target), 0, 100);
+
+        Set(target.Id, intent + delta);
         return true;
     }
 
@@ -259,13 +323,22 @@ public static class BrightnessHub
 
         foreach (DisplayTarget target in targets)
         {
-            int next = Math.Clamp(LevelOf(target) + delta, 0, 100);
-            App.Settings.Brightness[target.Id] = next;
-            Coalescer.SetTarget(target.Id, next);
+            // 累加要基于**意图值**，不能用 LevelOf（HDR 下它返回的是夹过的实际值）。
+            // 否则 HDR 下 50% 按一次加会变成 55%，关掉 HDR 后背光也跟着变 55%，
+            // 越按越亮。
+            int intent = App.Settings.Brightness.TryGetValue(target.Id, out int saved)
+                ? Math.Clamp(saved, 0, 100)
+                : Math.Clamp(LevelOf(target), 0, 100);
+
+            int requested = Math.Clamp(intent + delta, 0, 100);
+            int applied = ClampToChannel(target, requested);
+
+            App.Settings.Brightness[target.Id] = requested;
+            Coalescer.SetTarget(target.Id, applied);
 
             if (!haveReference || target.IsPrimary)
             {
-                referenceLevel = next;
+                referenceLevel = applied;
                 haveReference = true;
             }
         }
@@ -281,17 +354,25 @@ public static class BrightnessHub
         List<DisplayTarget> targets = Controllable.ToList();
         if (targets.Count == 0) return false;
 
-        int clamped = Math.Clamp(level, 0, 100);
+        int requested = Math.Clamp(level, 0, 100);
+
+        // 每台屏的通道能力可能不同（外接屏 HDR 下走 gamma、内屏走 WMI），
+        // 所以不能统一夹一次，要逐台算。
+        // 设置里存意图值，硬件收夹取后的值。
+        int reference = requested;
 
         foreach (DisplayTarget target in targets)
         {
-            App.Settings.Brightness[target.Id] = clamped;
-            Coalescer.SetTarget(target.Id, clamped);
+            int applied = ClampToChannel(target, requested);
+            App.Settings.Brightness[target.Id] = requested;
+            Coalescer.SetTarget(target.Id, applied);
+
+            if (target.IsPrimary) reference = applied;
         }
 
         SettingsStore.SaveDeferred(App.Settings);
 
-        if (notify) NotifyGrouped(targets, clamped);
+        if (notify) NotifyGrouped(targets, reference);
         return true;
     }
 

@@ -29,8 +29,9 @@ internal sealed class SettingsExpanderHost
 
         _brightness = new Slider
         {
-            Minimum = 0,
-            Maximum = 100,
+            // 范围跟随 HDR 状态：HDR 下 gamma 到不了 50% 以下。
+            Minimum = item.LevelMinimum,
+            Maximum = item.LevelMaximum,
             MinWidth = 240,
             StepFrequency = 1,
             VerticalAlignment = VerticalAlignment.Center,
@@ -87,6 +88,9 @@ internal sealed class SettingsExpanderHost
         {
             _expander.Description = item.Subtitle;
         }
+
+        if (Math.Abs(_brightness.Minimum - item.LevelMinimum) > 0.5) _brightness.Minimum = item.LevelMinimum;
+        if (Math.Abs(_brightness.Maximum - item.LevelMaximum) > 0.5) _brightness.Maximum = item.LevelMaximum;
 
         if (Math.Abs(_brightness.Value - item.Level) >= 0.5) _brightness.Value = item.Level;
 

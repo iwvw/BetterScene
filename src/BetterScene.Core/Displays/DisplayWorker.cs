@@ -274,7 +274,8 @@ public sealed class DisplayWorker
             {
                 target.Backend = DisplayBackend.Gamma;
                 target.Status = DisplayStatus.Degraded;
-                target.Brightness = GammaBrightness.ToSliderLevel(GammaBrightness.ReadLevel(target.GdiName));
+                // ReadLevel 返回的就是白点百分比，和滑块值同一刻度。
+                target.Brightness = GammaBrightness.ReadLevel(target.GdiName);
                 target.Maximum = 100;
             }
         }
@@ -416,7 +417,7 @@ public sealed class DisplayWorker
         {
             DisplayBackend.Ddc => SetDdcWithHealth(target, clamped),
             DisplayBackend.Wmi => WmiBrightness.TrySet(clamped, target.WmiInstance),
-            DisplayBackend.Gamma => GammaBrightness.TrySet(target.GdiName, GammaBrightness.ToGammaLevel(clamped), out _),
+            DisplayBackend.Gamma => GammaBrightness.TrySet(target.GdiName, clamped, out _),
             _ => false,
         };
     }

@@ -84,19 +84,20 @@ public sealed partial class OverviewPage : Page
 
     private void OnControlsRead(DisplayControls controls)
     {
-        DisplayControlCache.Set(controls.DisplayId, controls);
+        // 用合并后的清单，否则一次残缺读取会让控制项从界面上消失。
+        DisplayControls merged = DisplayControlCache.Set(controls.DisplayId, controls);
 
         _ = DispatcherQueue.TryEnqueue(() =>
         {
-            if (!_items.TryGetValue(controls.DisplayId, out DisplaySliderItem? item)) return;
+            if (!_items.TryGetValue(merged.DisplayId, out DisplaySliderItem? item)) return;
 
             // 拖动中不重建控件，否则会把用户正在拖的滑块换掉。
             if (item.Extras.Any(row => row.IsDragging)) return;
 
-            item.UpdateExtras(controls, (code, value) =>
-                DisplayBus.WriteControl(controls.DisplayId, code, value));
+            item.UpdateExtras(merged, (code, value) =>
+                DisplayBus.WriteControl(merged.DisplayId, code, value));
 
-            RebuildExtras(controls.DisplayId, item);
+            RebuildExtras(merged.DisplayId, item);
         });
     }
 

@@ -6,7 +6,6 @@ using BetterScene.Core.Displays;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-
 namespace BetterScene.App.Controls;
 
 /// <summary>能力清单的一行（只读展示）。</summary>
@@ -63,6 +62,36 @@ public sealed class ControlRow : INotifyPropertyChanged
     private readonly MonitorControl _model;
     private readonly Action<byte, uint> _write;
     private bool _suppress;
+
+    /// <summary>
+    /// 这台显示器当前是否处于 HDR 模式。
+    ///
+    /// HDR 下 DDC 写入会被固件锁死（写入返回成功但值不变），
+    /// 所以对比度这类纯 DDC 控制项调了也不会有任何效果。
+    /// 与其让用户拖了没反应，不如直接禁用并说明原因。
+    /// </summary>
+    public bool IsHdrActive { get; private set; }
+
+    /// <summary>
+    /// 这一项在 HDR 下是否应当禁用。
+    ///
+    /// 目前只有对比度：它完全依赖 DDC，HDR 下写不进去。
+    /// 音量同理（也是 DDC），但某些显示器在 HDR 下仍接受音量写入，
+    /// 而且音量对画面没有影响，所以不一起禁。
+    /// </summary>
+    public bool IsDisabledByHdr => IsHdrActive && _model.Code == ControlCatalog.Contrast;
+
+    /// <summary>设置 HDR 状态，返回是否发生变化（调用方据此决定要不要重建）。</summary>
+    public bool SetHdrActive(bool active)
+    {
+        if (IsHdrActive == active) return false;
+
+        IsHdrActive = active;
+        OnPropertyChanged(nameof(IsHdrActive));
+        OnPropertyChanged(nameof(IsDisabledByHdr));
+        OnPropertyChanged(nameof(DisabledHintVisibility));
+        return true;
+    }
 
     public ControlRow(MonitorControl model, Action<byte, uint> write)
     {
@@ -163,10 +192,15 @@ public sealed class ControlRow : INotifyPropertyChanged
 
     /// <summary>
     /// mini 面板右侧的说明文字。mini 面板没有卡片标题，靠这一列区分各行，
-    /// 所以统一显示控制项名称（亮度 / 对比度 / 色温 / 输入源…），
-    /// 而不是百分比——百分比对这种紧凑布局没有信息量。
+    /// 所以统一显示控制项名称（亮度 / 对比度 / 色温 / 输入源…）。
+    ///
+    /// 唯一例外是 HDR 下对比度不可用：换成短提示说明原因。
+    /// 文案必须短——这一列是固定宽度，太长会溢出把相邻行挤乱。
     /// </summary>
-    public string MiniLabel => Name;
+    public string MiniLabel => IsDisabledByHdr ? "HDR 禁用" : Name;
+
+    public Visibility DisabledHintVisibility =>
+        IsDisabledByHdr ? Visibility.Visible : Visibility.Collapsed;
 
     private double _value;
     public double Value
@@ -292,6 +326,9 @@ public sealed class ControlRow : INotifyPropertyChanged
         ComboBuilt = comboHook;
         // 固定图标列与文字列，和面板里亮度那一行用完全相同的栅格，
         // 这样所有控件（图标、滑块、下拉框、数值）都落在同一条竖线上。
+        //
+        // 文字列宽度由 InlineValueWidth 决定，所以右侧文案必须短，
+        // 否则会挤压或截断（"HDR 下不可用"就超出过，把相邻行挤乱了）。
         var grid = new Grid { ColumnSpacing = InlineGap };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(InlineIconWidth) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -321,6 +358,10 @@ public sealed class ControlRow : INotifyPropertyChanged
             TextAlignment = TextAlignment.Right,
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Visible,
+
+            // 文字列宽度固定，超长文案必须截断而不是溢出到相邻控件。
+            // 滚轮提示和 HDR 提示都可能比列宽长。
+            TextTrimming = TextTrimming.CharacterEllipsis,
         }.Secondary();
         PropertyChanged += (_, e) =>
         {
@@ -347,6 +388,9 @@ public sealed class ControlRow : INotifyPropertyChanged
         slider.ValueChanged += (_, e) => Value = e.NewValue;
         slider.PointerReleased += (_, _) => FlushWrite();
         slider.PointerCaptureLost += (_, _) => FlushWrite();
+
+        // HDR 下对比度写不进硬件，直接禁用，避免用户拖了没反应。
+        slider.IsEnabled = !IsDisabledByHdr;
 
         // 和概览页一致：滚轮也能调。
         SliderWheel.SetStep(slider, Math.Max(1, App.Settings.BrightnessStep));

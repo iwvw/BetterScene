@@ -129,15 +129,42 @@ internal static class CapabilityProbe
             ? new HashSet<byte>()
             : DdcOperations.ParseCapabilityCodes(capabilities);
 
+        // 两轮：
+        // 第一轮只读能力串声明过的项（快，通常够用）；
+        // 第二轮把声明里没有的项也实测一遍。
+        //
+        // 为什么需要第二轮：能力串读取本身会偶发不完整（显示器忙时
+        // 返回的字符串可能少几项），一旦声明残缺，那些真实支持的控制项
+        // 就会被这层过滤直接跳过，表现为「电源开关突然不见了」。
+        // 能力项是显示器的固有属性，扫一次就该扫全，不值得为了省
+        // 几十毫秒去赌厂商的字符串。
+        var seen = new HashSet<byte>();
+
         foreach (byte code in ControlCatalog.Codes)
         {
-            // 有声明就必须在声明里；没拿到能力串时按实测结果决定。
             if (declared.Count > 0 && !declared.Contains(code)) continue;
+            if (!seen.Add(code)) continue;
 
             if (!DdcOperations.Get(handle, code, out uint current, out uint maximum, out _)) continue;
 
             MonitorControl? control = BuildControl(target, code, current, maximum, capabilities);
             if (control is not null) result.Items.Add(control);
+        }
+
+        // 第二轮：补测声明里没提到的项。只对「有能力串但可能不完整」的情况做，
+        // 完全读不到能力串时第一轮已经全测过了。
+        if (declared.Count > 0)
+        {
+            foreach (byte code in ControlCatalog.Codes)
+            {
+                if (declared.Contains(code)) continue;
+                if (!seen.Add(code)) continue;
+
+                if (!DdcOperations.Get(handle, code, out uint current, out uint maximum, out _)) continue;
+
+                MonitorControl? control = BuildControl(target, code, current, maximum, capabilities);
+                if (control is not null) result.Items.Add(control);
+            }
         }
 
         // 按控件形态分组排列：滑块 → 下拉框 → 按钮组。

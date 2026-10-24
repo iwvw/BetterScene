@@ -81,23 +81,125 @@ public static class DisplayControlCache
         }
     }
 
-    public static void Set(string id, DisplayControls controls)
+    /// <summary>
+    /// 记录一次读取结果，返回**合并后**的清单。
+    ///
+    /// 返回值的意义很重要：调用方必须用返回值去更新界面，
+    /// 不能用自己传进来的 <paramref name="controls"/>。
+    /// 因为这次读到的可能只是残缺的一部分（显示器忙、时序抖动），
+    /// 而合并后的结果才包含全部已知能力。
+    ///
+    /// 之前只合并了缓存、界面仍用原始数据，导致
+    /// 「缓存里 5 项、面板上只剩 1 项」的不一致。
+    /// </summary>
+    public static DisplayControls Set(string id, DisplayControls controls)
     {
-        if (string.IsNullOrEmpty(id)) return;
-        if (controls.Items.Count == 0) return;
+        if (string.IsNullOrEmpty(id)) return controls;
+        if (controls.Items.Count == 0) return controls;
+
+        DisplayControls result;
 
         lock (Gate)
         {
             Load();
 
+            // 能力项是显示器的固有属性，不会中途变化。
+            //
+            // 之前这里无条件覆盖，于是出现了一个很难复现的问题：
+            // 某次 DDC 读取只成功了一两项，就把上次完整的 5 项覆盖成 1 项，
+            // 电源开关这类控件凭空消失，必须手动「重新探测」才回来。
+            //
+            // 现在改成并集：只要某个控制项曾经被确认存在，就一直保留。
+            // 新读到的结果只用来刷新「当前值」（用户可能用实体按键改过），
+            // 不能用来削减能力清单。
+            result = Map.TryGetValue(id, out CachedControls? existing)
+                     && existing.Controls is { Items.Count: > 0 } previous
+                ? Merge(previous, controls)
+                : controls;
+
             Map[id] = new CachedControls
             {
                 SavedUtc = DateTime.UtcNow,
-                Controls = controls,
+                Controls = result,
             };
         }
 
         ScheduleSave();
+        return result;
+    }
+
+    /// <summary>
+    /// 把新读到的控制项并进旧清单。
+    ///
+    /// 规则：
+    /// - 旧清单里有、新结果没有的项 → 保留旧的（这次只是没读到）
+    /// - 两边都有 → 用新的当前值，但保留旧的可选项列表
+    /// - 新结果里有、旧清单没有的 → 追加（固件升级后可能新增能力）
+    ///
+    /// 这样既能吸收真实变化（值改变、能力增加），
+    /// 又不会因为一次失败的读取把能力清单削掉。
+    /// </summary>
+    private static DisplayControls Merge(DisplayControls previous, DisplayControls fresh)
+    {
+        var merged = new List<MonitorControl>(previous.Items.Count + fresh.Items.Count);
+
+        // 用字典而不是对每项做 FirstOrDefault：
+        // 后者是 O(n²)，虽然这里最多 6 项影响不大，
+        // 但既然要建索引就一次建好。
+        var freshByCode = fresh.Items.ToDictionary(c => c.Code);
+        var previousCodes = previous.Items.Select(c => c.Code).ToHashSet();
+
+        foreach (MonitorControl item in previous.Items)
+        {
+            if (freshByCode.TryGetValue(item.Code, out MonitorControl? updated))
+            {
+                merged.Add(MergeControl(item, updated));
+            }
+            else
+            {
+                // 这次没读到：沿用旧值，别让控件消失。
+                merged.Add(item);
+            }
+        }
+
+        foreach (MonitorControl item in fresh.Items)
+        {
+            if (!previousCodes.Contains(item.Code)) merged.Add(item);
+        }
+
+        return new DisplayControls
+        {
+            DisplayId = fresh.DisplayId,
+            Items = merged,
+            // 保留旧错误信息没有意义：这次成功读到了，就不该再显示上次的异常。
+            Error = fresh.Error,
+        };
+    }
+
+    /// <summary>
+    /// 合并单个控制项：值用新的，可选项列表保留旧的。
+    ///
+    /// 可选项列表来自能力串，比单次读取更稳定；
+    /// 而且电源模式这类项如果这次没解析出选项，会导致整个控件被判定为空而消失。
+    /// </summary>
+    private static MonitorControl MergeControl(MonitorControl previous, MonitorControl fresh)
+    {
+        // 旧的可选项更多时说明这次解析不完整（或能力串读取被截断），沿用旧的。
+        List<ControlChoice> choices = previous.Choices.Count > fresh.Choices.Count
+            ? previous.Choices
+            : fresh.Choices;
+
+        return new MonitorControl
+        {
+            Code = fresh.Code,
+            Name = fresh.Name,
+            Kind = fresh.Kind,
+            Current = fresh.Current,
+            Minimum = fresh.Minimum,
+            Maximum = fresh.Maximum == 0 ? previous.Maximum : fresh.Maximum,
+            Choices = choices,
+            Persistent = fresh.Persistent,
+        };
     }
 
     public static DisplayControls? Get(string id)
@@ -112,8 +214,14 @@ public static class DisplayControlCache
     }
 
     /// <summary>
-    /// 缓存是否已经过期。用户可能用显示器实体按键改过输入源/色温，
-    /// 所以隔一段时间要重新问一次硬件。
+    /// 缓存里的「当前值」是否可能过期。
+    ///
+    /// 注意这只关乎**值**，不关乎**能力清单**：
+    /// 显示器支持哪些控制项是固有属性，扫到一次就一直有效，
+    /// 不该因为过了几分钟就重新探测——那正是控制项凭空消失的来源。
+    ///
+    /// 用户可能用显示器实体按键改过输入源/色温，所以值确实需要偶尔刷新。
+    /// 刷新走 <see cref="Set"/>，它用并集合并，不会削减能力清单。
     /// </summary>
     public static bool IsStale(string id, TimeSpan maxAge)
     {

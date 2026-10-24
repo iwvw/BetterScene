@@ -353,12 +353,35 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
     public string LevelText => CanControl ? $"{_level}%" : "—";
 
+    /// <summary>
+    /// 亮度滑块的下限。
+    ///
+    /// HDR 下外接屏的亮度靠 gamma 承担，而驱动拒绝 50% 以下的 gamma 写入
+    /// （实测：写 0.4 及以下返回失败，读回值停在 50%）。
+    /// 所以 HDR 时把滑块下限抬到 50，避免出现"拖了但画面不变"的空档。
+    ///
+    /// 非 HDR 时仍是 0：背光和 WMI 都能真正降到 0。
+    /// </summary>
+    public double LevelMinimum => UsesGammaUnderHdr() && Hdr.IsEnabled
+        ? GammaBrightness.MinimumDriverScale
+        : 0;
+
+    public double LevelMaximum => 100;
+
+    /// <summary>HDR 下滑块范围收窄了，界面上说明一句，避免用户以为滑块坏了。</summary>
+    public Visibility LevelRangeHintVisibility =>
+        LevelMinimum > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public string LevelRangeHint => $"HDR 下最低 {GammaBrightness.MinimumDriverScale:0}%";
+
     public int Level
     {
         get => _level;
         set
         {
-            int clamped = Math.Clamp(value, 0, 100);
+            // 夹到当前有效范围：HDR 下下限是驱动能接受的最小值（50%），
+            // 再往下写会被驱动直接拒绝，滑块动但画面不变，看起来像卡住。
+            int clamped = Math.Clamp(value, (int)LevelMinimum, (int)LevelMaximum);
             if (_level == clamped) return;
 
             _level = clamped;
@@ -369,6 +392,9 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
             _lastUserWriteMs = MonoClock.NowMs;
 
+            // 传 clamped：滑块受 Minimum/Maximum 限制，正常交互下它等于 value。
+            // 真正需要区分"用户意图 vs 实际可表达值"的地方在 BrightnessHub.Set，
+            // 那里会存意图、写实际。
             if (IsGroup || BrightnessHub.Linked)
             {
                 BrightnessHub.ApplyAll(clamped, notify: false);
@@ -546,9 +572,42 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(HdrEnabled));
         OnPropertyChanged(nameof(HdrToggleEnabled));
         OnPropertyChanged(nameof(HdrSummary));
+
+        // 滑块范围随 HDR 变化：HDR 下 gamma 到不了 50% 以下。
+        OnPropertyChanged(nameof(LevelMinimum));
+        OnPropertyChanged(nameof(LevelMaximum));
+        OnPropertyChanged(nameof(LevelRangeHintVisibility));
+        OnPropertyChanged(nameof(LevelRangeHint));
+
+        // 原来在 50% 以下的值要抬到新下限，否则滑块停在范围外。
+        if (_level < LevelMinimum)
+        {
+            _level = (int)LevelMinimum;
+            OnPropertyChanged(nameof(Level));
+            OnPropertyChanged(nameof(LevelText));
+        }
+
+        // HDR 状态变了要重建扩展项：对比度在 HDR 下不可用，
+        // 滑块必须跟着禁用/恢复，否则用户会拖一个写不进硬件的控件。
+        RebuildExtras();
     }
 
     private bool _hdrRead;
+
+    /// <summary>
+    /// 这台显示器在 HDR 下是不是走 gamma 调光。
+    ///
+    /// 只有 DDC 背光和本来就是软件调光的屏需要：
+    /// DDC 在 HDR 下被固件锁死，必须用 gamma 兜底。
+    /// WMI 背光（笔电内屏）在 HDR 下照常生效，不需要换算。
+    ///
+    /// 与 <see cref="BrightnessHub"/> 里的同名判断保持一致——
+    /// 两边必须用同一套规则，否则算出来的观感会对不上。
+    /// </summary>
+    private bool UsesGammaUnderHdr() => UsesGammaUnderHdr(_target);
+
+    private static bool UsesGammaUnderHdr(DisplayTarget? target) =>
+        target?.Backend is DisplayBackend.Ddc or DisplayBackend.Gamma;
 
     /// <summary>
     /// 本轮 Update 里是否有任何一项真的重新探测过（而不是命中指纹缓存）。
@@ -576,15 +635,41 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         BrightnessHub.InvalidateHdrCache();
         BrightnessHub.InvalidateSdrCache();
 
-        // WMI 背光屏（笔电内屏）不管 HDR 开关调的都是真背光。
-        // 但旧版本在 HDR 下给它叠过一层 gamma 压暗，管线重建后这层会残留，
-        // 表现为「背光是 100，画面却发暗」。这里清掉，并按记忆值重设一次背光。
-        if (_target.Backend == DisplayBackend.Wmi)
+        // 关掉 HDR 时，必须把 HDR 期间留下的 gamma 压暗清掉，并把背光重设回记忆值。
+        //
+        // 背景：HDR 下外接屏的背光被固件锁死，亮度只能靠 gamma ramp 实现。
+        // 于是 HDR 期间背光一直停在开 HDR 之前的值，滑块动的是 gamma 曲线。
+        // 关掉 HDR 后如果什么都不做：
+        //   - 背光还是旧值
+        //   - gamma ramp 还压着（系统不会因为退出 HDR 就重置它）
+        // 两者叠加，用户看到的就是「HDR 下调的亮度，关掉后没恢复」。
+        //
+        // gamma 立刻清：它不依赖显示管线，早清早好。
+        // 背光要等管线重建完再写：此刻显示器正在重新协商，
+        // 立即写 DDC 大概率失败（0x57 / I2C 超时），等于没恢复。
+        bool restoreBrightness = !enabled;
+
+        // 关闭 HDR 前先记下当前亮度。
+        //
+        // 刻度已经统一：滑块值 = gamma 刻度 = 白点百分比 = 背光百分比。
+        // 所以直接把当前值搬到背光就是"观感一致"，不需要任何换算。
+        // 这是把三套刻度合并成一套之后最直接的好处。
+        int? restoreTarget = null;
+
+        if (restoreBrightness && UsesGammaUnderHdr())
+        {
+            restoreTarget = App.Settings.Brightness.TryGetValue(_target.Id, out int savedBefore)
+                ? Math.Clamp(savedBefore, 0, 100)
+                : Math.Clamp(_target.Brightness, 0, 100);
+        }
+
+        if (restoreBrightness)
         {
             GammaBrightness.Restore(_target.GdiName);
 
-            int level = BrightnessHub.LevelOf(_target);
-            DisplayBus.SetBrightness(_target.Id, level);
+            // 清完 gamma 后缓存里的读数就失效了，必须一起清，
+            // 否则滑块仍会按旧的 gamma 值显示。
+            BrightnessHub.InvalidateSdrCache();
         }
 
         // 先乐观更新，避免开关弹回原位造成"没生效"的错觉。
@@ -595,6 +680,39 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         // 等管线重建完成后以真实状态为准。
         await Task.Delay(1600);
         RefreshHdr(_target);
+
+        if (restoreBrightness)
+        {
+            int restored = restoreTarget
+                ?? (App.Settings.Brightness.TryGetValue(_target.Id, out int saved)
+                    ? Math.Clamp(saved, 0, 100)
+                    : Math.Clamp(_target.Brightness, 0, 100));
+
+            DisplayBus.SetBrightness(_target.Id, restored);
+
+            // 背光写入是异步的，给硬件一点时间再对齐滑块。
+            await Task.Delay(400);
+        }
+        else if (UsesGammaUnderHdr())
+        {
+            // 开启 HDR：背光被固件锁死，亮度改由 gamma 承担。
+            //
+            // 刻度已统一，直接把当前值写进 gamma 就落在相同观感上，
+            // 不需要反解。唯一要注意的是驱动下限：低于 50% 的写入会被拒绝，
+            // TrySet 内部会夹住，所以这里的值可能"看起来设了 30 实际是 50"。
+            //
+            // 不写 App.Settings.Brightness：设置里存的是用户意图（SDR 下的目标背光），
+            // 被 gamma 的下限夹过之后再写回去，会把 30% 永久改成 50%，
+            // 来回切几次越切越亮。
+            int current = App.Settings.Brightness.TryGetValue(_target.Id, out int saved)
+                ? Math.Clamp(saved, 0, 100)
+                : Math.Clamp(_target.Brightness, 0, 100);
+
+            GammaBrightness.TrySet(_target.GdiName, current, out _);
+
+            // 让 LevelOf 重新读一次 ramp，别用换算前的缓存。
+            BrightnessHub.InvalidateSdrCache();
+        }
 
         // 管线重建后重新对齐一次亮度显示。
         OnPropertyChanged(nameof(Level));
@@ -932,6 +1050,10 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         {
             if (!IsMiniEnabled(item.Code)) continue;
             var row = new ControlRow(item, _extrasWrite);
+
+            // HDR 下对比度走不通 DDC，先标记为禁用，
+            // 构建滑块时就会带上 IsEnabled=false。
+            row.SetHdrActive(Hdr.IsEnabled);
 
             switch (item.Kind)
             {
