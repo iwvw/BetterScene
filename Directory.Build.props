@@ -1,10 +1,10 @@
 <Project>
 
   <PropertyGroup>
-    <VersionPrefix>0.2.5</VersionPrefix>
-    <Version>0.2.5</Version>
-    <AssemblyVersion>0.2.5.0</AssemblyVersion>
-    <FileVersion>0.2.5.0</FileVersion>
+    <VersionPrefix>0.2.6</VersionPrefix>
+    <Version>0.2.6</Version>
+    <AssemblyVersion>0.2.6.0</AssemblyVersion>
+    <FileVersion>0.2.6.0</FileVersion>
     <Product>BetterScene</Product>
     <Authors>DSUK</Authors>
     <Company>DSUK</Company>
