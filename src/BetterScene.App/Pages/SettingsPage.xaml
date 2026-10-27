@@ -80,7 +80,7 @@
                         <FontIcon Glyph="&#xE706;" />
                     </tk:SettingsExpander.HeaderIcon>
                     <tk:SettingsExpander.Items>
-                        <tk:SettingsCard Header="显示百分比"
+                        <tk:SettingsCard Header="显示亮度数值"
                                          Description="在进度条右侧显示当前亮度数值。">
                             <ToggleSwitch x:Name="OsdPercentSwitch" Toggled="OnOsdPercentToggled" />
                         </tk:SettingsCard>

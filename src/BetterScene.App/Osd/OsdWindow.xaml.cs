@@ -19,14 +19,14 @@ public sealed partial class OsdWindow : Window
     /// <summary>
     /// 设计宽度，只在内容尚未完成测量时用作兜底。
     ///
-    /// 真正决定窗口宽度的是 <see cref="MeasureContentWidth"/>：
+    /// 真正决定窗口宽度的是 <see cref="MeasureContent"/>：
     /// 内容宽度取决于图标字形、数字位数和 DPI 缩放，
-    /// 写死一个数值迟早会在某个组合下把百分比裁掉。
+    /// 写死一个数值迟早会在某个组合下把数值裁掉。
     /// </summary>
     private const int DesignWidth = 180;
 
-    /// <summary>显示百分比时的兜底宽度（内容未测量完成时使用）。</summary>
-    private const int DesignWidthWithPercent = 240;
+    /// <summary>显示亮度数值时的兜底宽度（内容未测量完成时使用）。</summary>
+    private const int DesignWidthWithPercent = 220;
 
     private const int DesignHeight = 0;
     private const int MarginBottomDip = 8;
@@ -439,9 +439,11 @@ public sealed partial class OsdWindow : Window
 
         // 百分比必须无条件更新：Track 在窗口首次显示前宽度为 0，
         // 若跟着进度条一起 return，第一次弹出会显示上一个数值。
+        // 只显示数字，不带百分号：进度条本身已经表达了"百分比"这层含义，
+        // 多一个 % 只是多占宽度。
         if (PercentText is not null)
         {
-            PercentText.Text = $"{_level}%";
+            PercentText.Text = _level.ToString();
         }
     }
 
@@ -512,7 +514,7 @@ public sealed partial class OsdWindow : Window
         return (ShowPercent ? DesignWidthWithPercent : DesignWidth, 44);
     }
 
-    /// <summary>百分比列是否显示。同时决定窗口宽度。</summary>
+    /// <summary>亮度数值列是否显示。同时决定窗口宽度。</summary>
     private bool ShowPercent => App.Settings.OsdShowPercent;
 
     private int Scale(int dip)

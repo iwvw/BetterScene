@@ -48,16 +48,17 @@
                     </Grid>
                 </Grid>
 
-                <!-- 百分比。固定宽度避免数字位数变化时进度条左右跳动。 -->
+                <!-- 亮度数值。固定宽度避免位数变化时进度条左右跳动。
+                     只显示数字不带百分号——进度条本身已经表达了百分比含义。 -->
                 <TextBlock x:Name="PercentText"
                            Grid.Column="2"
-                           MinWidth="34"
+                           MinWidth="24"
                            TextAlignment="Right"
                            VerticalAlignment="Center"
                            FontSize="12"
                            Foreground="{ThemeResource OsdForegroundBrush}"
                            Visibility="Collapsed"
-                           Text="100%" />
+                           Text="100" />
             </Grid>
         </Border>
     </Grid>
