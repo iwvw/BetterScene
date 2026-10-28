@@ -279,8 +279,8 @@ public sealed partial class OsdWindow : Window
                 TrySetBackdrop();
             }
 
-            _slider.Animate(_hiddenRect, _shownRect, 255, 255, ShowDurationMs,
-                easeIn: false, moveSize: true, onCompleted: () => _animating = false);
+            _slider.Animate(_shownRect, ShowDurationMs,
+                easeIn: false, onCompleted: () => _animating = false);
             _animating = true;
         }
         else if (relocate)
@@ -293,8 +293,8 @@ public sealed partial class OsdWindow : Window
                 // 正在退场时切了显示器，直接落位并重新入场。
                 _hiding = false;
                 SlideTo(_hiddenRect);
-                _slider.Animate(_hiddenRect, _shownRect, 255, 255, ShowDurationMs,
-                    easeIn: false, moveSize: true, onCompleted: () => _animating = false);
+                _slider.Animate(_shownRect, ShowDurationMs,
+                    easeIn: false, onCompleted: () => _animating = false);
                 _animating = true;
             }
             else
@@ -344,8 +344,8 @@ public sealed partial class OsdWindow : Window
         _topTimer.Stop();
         _dragging = false;
 
-        _slider.Animate(_shownRect, _hiddenRect, 255, 255, HideDurationMs,
-            easeIn: true, moveSize: true, onCompleted: () =>
+        _slider.Animate(_hiddenRect, HideDurationMs,
+            easeIn: true, onCompleted: () =>
             {
                 if (!_hiding) return;
 

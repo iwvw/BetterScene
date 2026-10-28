@@ -84,6 +84,14 @@ public sealed partial class MainWindow : Window
 
         // 先建好首屏，避免「最小化启动、之后才唤回窗口」时出现空白。
         LoadInitialPage();
+
+        // mini 面板也要提前建好并离屏渲染一次：它是懒创建的，
+        // 不预热的话「第一次点击」必然要付创建 + 首帧的代价，
+        // 工作集被回收过之后尤其明显。
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, WarmUpFlyout);
+        });
     }
 
     private void OnActivated(object sender, WindowActivatedEventArgs args)
@@ -181,6 +189,10 @@ public sealed partial class MainWindow : Window
         {
             ApplyWindowIcon();
         });
+
+        // 用户回到主窗口，说明短期内不会再点托盘面板；
+        // 趁现在把面板预热一次，下次展开就是热的。
+        _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, WarmUpFlyout);
     }
 
     public void ApplyThemeToChrome(string theme)
@@ -316,6 +328,31 @@ public sealed partial class MainWindow : Window
         _flyout.Toggle();
     }
 
+    /// <summary>
+    /// 预热 mini 面板。
+    ///
+    /// 面板是懒创建的，所以「第一次点击」必然要付创建 + 首帧渲染的代价。
+    /// 这里在启动后、以及每次显示器列表变化时提前把它建好并离屏渲染一次，
+    /// 让第一次展开和之后的展开一样流畅。
+    ///
+    /// 内容高度必须在这一刻就是对的：如果面板还是空的（显示器还没探测完），
+    /// 缓存下来的高度只有提示文字那么高，真正展开会先滑出一个小窗口
+    /// 再被撑开，看起来就是"卡一下"。
+    /// </summary>
+    public void WarmUpFlyout()
+    {
+        // 没有显示器就别预热：此时的测量结果一定是错的。
+        if (DisplayBus.Current.Count == 0) return;
+
+        _flyout ??= CreateFlyout();
+
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            if (_flyout is null || _flyout.IsVisible) return;
+            _flyout.MaybeWarmUp();
+        });
+    }
+
     public void DispatchToggleScene() => Dispatch(() =>
         SwitchScene(ThemeSwitcher.Current == SystemTheme.Dark ? SystemTheme.Light : SystemTheme.Dark));
 
@@ -439,6 +476,11 @@ public sealed partial class MainWindow : Window
 
     public void ReportDisplayState(int count)
     {
+        // 显示器列表变了，卡片数量跟着变。之前预热时可能还是空面板，
+        // 缓存的高度只有提示文字那么高，真正展开会先滑出一个小窗口
+        // 再被撑开。这里重新预热一次，让缓存的高度和内容对上。
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, WarmUpFlyout);
+
         // 状态药丸已移除，这里只负责托盘提示。
         if (!App.Settings.ShowTrayIcon) return;
 
@@ -581,15 +623,10 @@ public sealed partial class MainWindow : Window
         }
 
         // 窗口隐藏后界面不再渲染，是回收工作集的最佳时机。
+        // 但延迟做：用户最小化往往马上又打开，立刻交还页只会让
+        // 下次唤回重新缺页。排队期间重新打开会自动取消。
         MemoryTrimmer.EndActivity(ActivitySources.MainWindow);
-
-        // 稍等一拍再修剪：Hide() 之后 XAML 还要跑完收起动画、
-        // 释放交换链，立刻清工作集会和那批释放操作抢同一批页。
-        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
-        {
-            await Task.Delay(1200);
-            MemoryTrimmer.TryTrim("window hidden");
-        });
+        MemoryTrimmer.ScheduleTrim("window hidden");
     }
 
     /// <summary>

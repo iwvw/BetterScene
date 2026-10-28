@@ -895,10 +895,6 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     {
         var list = members.ToList();
 
-        MiniSliders.Clear();
-        MiniChoices.Clear();
-        MiniActions.Clear();
-
         // 收集「控制项 → 支持它的显示器 Id 列表」。
         var supportedBy = new Dictionary<byte, (MonitorControl Model, List<DisplayTarget> Targets)>();
 
@@ -922,6 +918,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
             }
         }
 
+        var signature = new System.Text.StringBuilder(32);
+
         if (supportedBy.Count > 0)
         {
             // 勾选状态：所有显示器里勾过的项都算。
@@ -938,6 +936,44 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
                 // 只保留跨屏同步有意义的项。
                 if (!GroupSafeCodes.Contains(model.Code)) continue;
 
+                if (!enabledNames.Contains(model.Name)) continue;
+                if (targets.Count == 0) continue;
+
+                signature.Append('|').Append(model.Code).Append(':').Append(targets.Count);
+            }
+        }
+
+        string next = signature.ToString();
+        bool populated = MiniSliders.Count + MiniChoices.Count + MiniActions.Count > 0;
+
+        // 结构和上次一致：只更新值，不重建集合。
+        // 组卡片在每次 Refresh 里都会被同步，重建会让 ItemsControl
+        // 丢掉全部容器并重新实例化模板，弹面板时白白卡一下。
+        if (next == _groupExtrasSignature && populated)
+        {
+            SyncGroupExtraValues(supportedBy);
+            return;
+        }
+
+        _groupExtrasSignature = next;
+
+        MiniSliders.Clear();
+        MiniChoices.Clear();
+        MiniActions.Clear();
+
+        if (supportedBy.Count > 0)
+        {
+            var enabledNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DisplaySliderItem member in list)
+            {
+                foreach (string name in MiniControlsOf(member.Id)) enabledNames.Add(name);
+            }
+
+            foreach (var pair in supportedBy.OrderBy(p => p.Key))
+            {
+                (MonitorControl model, List<DisplayTarget> targets) = pair.Value;
+
+                if (!GroupSafeCodes.Contains(model.Code)) continue;
                 if (!enabledNames.Contains(model.Name)) continue;
                 if (targets.Count == 0) continue;
 
@@ -971,6 +1007,26 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(MiniResolutionVisibility));
         OnPropertyChanged(nameof(MiniRefreshRateVisibility));
         OnPropertyChanged(nameof(MiniScaleVisibility));
+    }
+
+    private string _groupExtrasSignature = string.Empty;
+
+    private void SyncGroupExtraValues(
+        Dictionary<byte, (MonitorControl Model, List<DisplayTarget> Targets)> supportedBy)
+    {
+        foreach (ControlRow row in MiniSliders) SyncRow(row, supportedBy);
+        foreach (ControlRow row in MiniChoices) SyncRow(row, supportedBy);
+        foreach (ControlRow row in MiniActions) SyncRow(row, supportedBy);
+    }
+
+    private static void SyncRow(
+        ControlRow row,
+        Dictionary<byte, (MonitorControl Model, List<DisplayTarget> Targets)> supportedBy)
+    {
+        if (row.IsDragging) return;
+        if (!supportedBy.TryGetValue(row.Code, out var entry)) return;
+
+        row.RevertTo(entry.Model.Current);
     }
 
     /// <summary>
@@ -1014,6 +1070,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
     private DisplayControls? _lastControls;
     private Action<byte, uint>? _extrasWrite;
+    private string _extrasSignature = string.Empty;
 
     /// <summary>最近一次读到的控制项。显示器页据此生成 mini 控制项勾选列表。</summary>
     public DisplayControls? LastControls => _lastControls;
@@ -1024,6 +1081,12 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     ///
     /// mini 用独立的 ControlRow 实例：每个 ControlRow 持有自己的 InlineView，
     /// 同一个 UIElement 不能同时挂在概览页和 mini 面板两棵树上。
+    ///
+    /// <b>带签名短路</b>：结果和上次一致时只同步数值，不重建集合。
+    /// 重建意味着清空 → 重新 Add → ItemsControl 丢弃全部容器 →
+    /// 重新实例化模板 → 重建 Slider/ComboBox → 整棵子树重新排版。
+    /// 这个函数会被 Refresh 间接调用（面板每次弹出、每次切关联都会走），
+    /// 无条件重建的话每次弹出都要付一遍这笔开销，正是首帧卡顿的来源。
     /// </summary>
     public void RebuildExtras()
     {
@@ -1038,6 +1101,17 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         }
 
         if (_extrasWrite is null) return;
+
+        string signature = BuildExtrasSignature();
+        bool populated = MiniSliders.Count + MiniChoices.Count + MiniActions.Count > 0;
+
+        if (signature == _extrasSignature && populated)
+        {
+            SyncExtraValues();
+            return;
+        }
+
+        _extrasSignature = signature;
 
         // mini 面板按控件形态分三段排列：滑块 → 下拉框 → 按钮。
         // 同形态排在一起，扫视时是"三条连续的条 / 三个框 / 两个按钮"，
@@ -1083,6 +1157,63 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(MiniResolutionVisibility));
         OnPropertyChanged(nameof(MiniRefreshRateVisibility));
         OnPropertyChanged(nameof(MiniScaleVisibility));
+    }
+
+    /// <summary>
+    /// mini 控制项的结构指纹：勾选项 + 控件形态 + HDR 状态。
+    ///
+    /// 只要这三样没变，集合就不必重建——值的变化走 <see cref="SyncExtraValues"/>。
+    /// </summary>
+    private string BuildExtrasSignature()
+    {
+        if (_lastControls is null) return string.Empty;
+
+        var builder = new System.Text.StringBuilder(32);
+        builder.Append(Id).Append('|').Append(Hdr.IsEnabled ? '1' : '0');
+
+        foreach (MonitorControl item in _lastControls.Items)
+        {
+            if (!IsMiniEnabled(item.Code)) continue;
+            builder.Append('|').Append(item.Code).Append(':').Append((int)item.Kind);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// 把最新读到的值同步进已有控件，不动集合结构。
+    /// 正在拖动的行跳过，否则滑块会在手底下被拽回去。
+    /// </summary>
+    private void SyncExtraValues()
+    {
+        if (_lastControls is null) return;
+
+        foreach (MonitorControl item in _lastControls.Items)
+        {
+            ControlRow? row = FindExtra(item.Code);
+            if (row is null || row.IsDragging) continue;
+            row.RevertTo(item.Current);
+        }
+    }
+
+    private ControlRow? FindExtra(byte code)
+    {
+        foreach (ControlRow row in MiniSliders)
+        {
+            if (row.Code == code) return row;
+        }
+
+        foreach (ControlRow row in MiniChoices)
+        {
+            if (row.Code == code) return row;
+        }
+
+        foreach (ControlRow row in MiniActions)
+        {
+            if (row.Code == code) return row;
+        }
+
+        return null;
     }
 
     /// <summary>mini 面板是否启用了某个控制项（按显示器 Id + 控制项名称判断）。</summary>

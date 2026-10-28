@@ -15,8 +15,8 @@ namespace BetterScene.App.Flyout;
 public sealed partial class FlyoutPanel : UserControl
 {
     private const double DragThresholdDip = 8;
-    private static readonly TimeSpan ItemDuration = TimeSpan.FromMilliseconds(240);
-    private static readonly TimeSpan ItemStagger = TimeSpan.FromMilliseconds(45);
+    private static readonly TimeSpan ItemDuration = TimeSpan.FromMilliseconds(220);
+    private static readonly TimeSpan ItemStagger = TimeSpan.FromMilliseconds(35);
 
     private readonly Dictionary<string, DisplaySliderItem> _items = new(StringComparer.OrdinalIgnoreCase);
     private DisplaySliderItem? _group;
@@ -27,6 +27,12 @@ public sealed partial class FlyoutPanel : UserControl
     private Windows.Foundation.Point _pressPoint;
 
     public ObservableCollection<DisplaySliderItem> Displays { get; } = new();
+
+    /// <summary>面板里是否已经有显示器卡片。没有时测出的高度不可信。</summary>
+    public bool HasDisplays => Displays.Count > 0;
+
+    /// <summary>当前卡片数量。预热据此判断内容结构是否变过。</summary>
+    public int DisplayCount => Displays.Count;
 
     /// <summary>
     /// 用户是否正在面板上操作。
@@ -363,9 +369,32 @@ public sealed partial class FlyoutPanel : UserControl
 
     private readonly HashSet<string> _extrasLoaded = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 亮度变化：只更新滑块位置，不重建面板。
+    ///
+    /// 之前这里直接调 <see cref="Refresh"/>，而 Refresh 会走
+    /// SyncDisplays → item.Update()，后者要探测 HDR / 显示模式 / 缩放，
+    /// 再发二十多个 PropertyChanged。拖动滑块时每帧一次，
+    /// 帧率就是被这条路径吃掉的。
+    ///
+    /// 亮度变化本身只影响两个数字：每张卡的亮度、组卡片的平均值。
+    /// </summary>
     private void OnBrightnessChanged(BrightnessChange change)
     {
-        _ = DispatcherQueue.TryEnqueue(() => Refresh(animate: false));
+        _ = DispatcherQueue.TryEnqueue(RefreshLevels);
+    }
+
+    private void RefreshLevels()
+    {
+        foreach (DisplayTarget target in DisplayBus.Current)
+        {
+            if (_items.TryGetValue(target.Id, out DisplaySliderItem? item))
+            {
+                item.ApplyLevelFromHub(BrightnessHub.LevelOf(target));
+            }
+        }
+
+        _group?.ApplyLevelFromHub(AverageLevel(BrightnessHub.Controllable.ToList()));
     }
 
     private void OnDisplaysChanged()
@@ -554,7 +583,17 @@ public sealed partial class FlyoutPanel : UserControl
     private readonly HashSet<FrameworkElement> _animating = new();
     private bool _windowSettled = true;
 
-    /// <summary>窗口入场/收尾动画结束后调用，之后才允许播卡片动画。</summary>
+    /// <summary>
+    /// 让卡片入场动画与窗口滑入并行开始。
+    ///
+    /// 之前是严格串行的：窗口滑完（180ms）才解锁卡片，
+    /// 卡片再各自淡入 240ms，末尾几张还要等 28ms×N 的错峰，
+    /// 用户看到的是"滑进来了，然后内容才一个个冒出来"，
+    /// 总时长接近 600ms，感觉就是拖沓。
+    ///
+    /// 现在窗口一显示就解锁：卡片在窗口移动的同时淡入，
+    /// 两者叠加成一段约 300ms 的连贯动作。
+    /// </summary>
     public void SetWindowSettled(bool settled)
     {
         _windowSettled = settled;

@@ -112,28 +112,65 @@ internal static class WindowChrome
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
     }
 
+    /// <summary>
+    /// 每台显示器任务栏窗口的缓存。
+    ///
+    /// 之前每次调用都 EnumWindows 全量遍历：系统上窗口一多就是 5–30ms，
+    /// 而面板展开、收起、拖动、改高度每一条路径都会调到这里，
+    /// 全部发生在 UI 线程上，直接体现为展开首帧掉帧。
+    ///
+    /// 任务栏只在显示器热插拔或 Explorer 重启时换 HWND，
+    /// 所以缓存失效判定用 <c>IsWindow</c> 就够。
+    /// </summary>
+    private static readonly Dictionary<IntPtr, IntPtr> TaskbarCache = new();
+
     private static IntPtr FindTaskbarForWindow(IntPtr hwnd)
     {
         IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
 
-        IntPtr primary = FindWindowW("Shell_TrayWnd", null);
-        if (primary != IntPtr.Zero && MonitorFromWindow(primary, MONITOR_DEFAULTTONEAREST) == monitor)
+        lock (TaskbarCache)
         {
-            return primary;
+            if (TaskbarCache.TryGetValue(monitor, out IntPtr cached)
+                && cached != IntPtr.Zero
+                && IsWindow(cached))
+            {
+                return cached;
+            }
         }
 
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((candidate, _) =>
-        {
-            var builder = new System.Text.StringBuilder(64);
-            GetClassNameW(candidate, builder, builder.Capacity);
-            if (builder.ToString() != "Shell_SecondaryTrayWnd") return true;
-            if (MonitorFromWindow(candidate, MONITOR_DEFAULTTONEAREST) != monitor) return true;
-            found = candidate;
-            return false;
-        }, IntPtr.Zero);
+        IntPtr primary = FindWindowW("Shell_TrayWnd", null);
 
-        return found != IntPtr.Zero ? found : primary;
+        IntPtr found = IntPtr.Zero;
+
+        if (primary != IntPtr.Zero && MonitorFromWindow(primary, MONITOR_DEFAULTTONEAREST) == monitor)
+        {
+            found = primary;
+        }
+        else
+        {
+            IntPtr secondary = IntPtr.Zero;
+            EnumWindows((candidate, _) =>
+            {
+                var builder = new System.Text.StringBuilder(64);
+                GetClassNameW(candidate, builder, builder.Capacity);
+                if (builder.ToString() != "Shell_SecondaryTrayWnd") return true;
+                if (MonitorFromWindow(candidate, MONITOR_DEFAULTTONEAREST) != monitor) return true;
+                secondary = candidate;
+                return false;
+            }, IntPtr.Zero);
+
+            found = secondary != IntPtr.Zero ? secondary : primary;
+        }
+
+        if (found != IntPtr.Zero)
+        {
+            lock (TaskbarCache)
+            {
+                TaskbarCache[monitor] = found;
+            }
+        }
+
+        return found;
     }
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -265,6 +302,9 @@ internal static class WindowChrome
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
