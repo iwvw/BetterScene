@@ -10,7 +10,7 @@
                     ToolTipText="Windows 视觉改善"
                     Visibility="Collapsed">
         <tb:TaskbarIcon.ContextFlyout>
-            <MenuFlyout AreOpenCloseAnimationsEnabled="False">
+            <MenuFlyout AreOpenCloseAnimationsEnabled="True">
                 <MenuFlyoutItem x:Name="TrayStatusItem" FontSize="13" IsEnabled="False" Text="状态：加载中">
                     <MenuFlyoutItem.Icon>
                         <FontIcon FontSize="12" Glyph="&#xE9D9;" />
@@ -29,15 +29,30 @@
                 </MenuFlyoutItem>
                 <MenuFlyoutSeparator />
                 <MenuFlyoutSubItem x:Name="TrayThemeMenu" Text="切换主题">
-                    <ToggleMenuFlyoutItem x:Name="TrayLightItem" Text="浅色" />
-                    <ToggleMenuFlyoutItem x:Name="TrayDarkItem" Text="深色" />
+                    <MenuFlyoutSubItem.Icon>
+                        <FontIcon FontSize="14" Glyph="&#xE790;" />
+                    </MenuFlyoutSubItem.Icon>
+                    <ToggleMenuFlyoutItem x:Name="TrayLightItem" Text="浅色">
+                        <ToggleMenuFlyoutItem.Icon>
+                            <FontIcon FontSize="14" Glyph="&#xE706;" />
+                        </ToggleMenuFlyoutItem.Icon>
+                    </ToggleMenuFlyoutItem>
+                    <ToggleMenuFlyoutItem x:Name="TrayDarkItem" Text="深色">
+                        <ToggleMenuFlyoutItem.Icon>
+                            <FontIcon FontSize="14" Glyph="&#xE708;" />
+                        </ToggleMenuFlyoutItem.Icon>
+                    </ToggleMenuFlyoutItem>
                 </MenuFlyoutSubItem>
                 <MenuFlyoutItem x:Name="TrayToggleItem" Text="切换明暗">
                     <MenuFlyoutItem.Icon>
                         <FontIcon FontSize="14" Glyph="&#xE793;" />
                     </MenuFlyoutItem.Icon>
                 </MenuFlyoutItem>
-                <MenuFlyoutItem x:Name="TrayPauseItem" Text="暂停自动切换" />
+                <MenuFlyoutItem x:Name="TrayPauseItem" Text="暂停自动切换">
+                    <MenuFlyoutItem.Icon>
+                        <FontIcon FontSize="14" Glyph="&#xE769;" />
+                    </MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
                 <MenuFlyoutSeparator />
                 <MenuFlyoutItem x:Name="TraySettingsItem" Text="设置">
                     <MenuFlyoutItem.Icon>

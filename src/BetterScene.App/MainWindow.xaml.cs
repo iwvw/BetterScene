@@ -623,10 +623,21 @@ public sealed partial class MainWindow : Window
         }
 
         // 窗口隐藏后界面不再渲染，是回收工作集的最佳时机。
-        // 但延迟做：用户最小化往往马上又打开，立刻交还页只会让
-        // 下次唤回重新缺页。排队期间重新打开会自动取消。
+        //
+        // 这里刻意走立即回收（force），不排队也不看内存压力：
+        // 主窗口隐藏意味着用户已经把它收进托盘、较长一段时间不会再看，
+        // 那批交换链、字形位图、着色器缓存确实用不上了。
+        // 与迷你面板不同——面板收起往往只是临时瞄一眼，几秒后又要打开，
+        // 立刻交还反而让下次展开重新缺页。
+        //
+        // 稍等一拍再修剪：Hide() 之后 XAML 还要跑完收起动画、释放交换链，
+        // 立刻清工作集会和那批释放操作抢同一批页。
         MemoryTrimmer.EndActivity(ActivitySources.MainWindow);
-        MemoryTrimmer.ScheduleTrim("window hidden");
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
+        {
+            await Task.Delay(1200);
+            MemoryTrimmer.TryTrim("window hidden", force: true);
+        });
     }
 
     /// <summary>
