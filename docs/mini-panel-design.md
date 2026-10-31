@@ -363,6 +363,24 @@ Panel.UpdateLayout();
 
 预热完成后立刻隐藏并摆回原位。要记录当前前台窗口，万一系统把预热窗口激活了，事后还原——否则用户正在打字的窗口会失焦。
 
+### 预热绝不能计算最终落点
+
+这是多显示器错位的主因，值得单独说。
+
+预热时窗口在 `(-32000, -32000)`，这个坐标是假的。任何「按窗口位置找显示器」的算法（`DisplayArea.GetFromWindowId`、`MonitorFromWindow`）都会解析到**离这个假坐标最近的那块屏**。副屏在主屏左侧或上方时，最近的就是副屏。
+
+于是：
+
+```
+预热把窗口丢到 -32000 → 解析到副屏 → _targetRect 变成副屏右下角
+→ 窗口停在副屏 → 下次展开再按窗口位置解析 → 还是副屏
+→ 自我强化，永久锁死在副屏
+```
+
+表现就是用户从主屏托盘点击，面板却弹在副屏。
+
+**正确做法**：预热只测量高度，落点交给真正的显示时机。预热结束时只把窗口停回**已经算好的** `_targetRect`，不重算——停在屏幕外还会让后续 `MonitorFromWindow` 取任务栏时解析错屏。
+
 ### 何时预热
 
 | 时机 | 原因 |
@@ -382,7 +400,90 @@ if (!Panel.HasDisplays) return;   // 空面板不预热、不记高度
 
 ---
 
-## 七、布局测量：先滑、后量
+## 七、落位：按用户操作点，不按窗口位置
+
+多显示器 + 托盘弹出的组合下，「面板弹错屏」几乎总是一个原因：**定位锚点用错了对象**。
+
+### 错误的锚点
+
+```csharp
+// 语义是「窗口现在在哪块屏」，不是「用户点的是哪块屏」
+var display = DisplayArea.GetFromWindowId(window.Id, DisplayAreaFallback.Nearest);
+```
+
+这个函数只要窗口位置一旦漂移，就会忠实地把错误位置继续放大。而窗口位置太容易漂移了：预热把它丢到 `-32000`、收起动画把它推到屏幕外下方、上一次的落点还没更新。
+
+### 正确的锚点
+
+用户点托盘、按热键的那一刻，光标就在他正在看的那块屏上。以它为锚：
+
+```csharp
+private bool _hasAnchor;
+private int _anchorX, _anchorY;
+
+private void CaptureAnchor()
+{
+    if (!GetCursorPos(out Point point)) return;
+    _hasAnchor = true;
+    _anchorX = point.X;
+    _anchorY = point.Y;
+}
+
+public void Toggle()
+{
+    if (!_wantVisible) CaptureAnchor();   // 只在「转为可见」时采集
+    _wantVisible = !_wantVisible;
+    ApplyIntent();
+}
+```
+
+```csharp
+var display = DisplayArea.GetFromPoint(
+    new PointInt32(anchorX, anchorY), DisplayAreaFallback.Nearest);
+```
+
+### 三条配套纪律
+
+**一、锚点在「转为可见」的那一刻采集**，不在窗口构造时。托盘点击、菜单项、热键都走 `Toggle()`，这一个点就能覆盖所有入口。
+
+**二、所有落点计算必须走同一个入口。** 这类 bug 最典型的表现是「大部分时候对、偶尔错」——往往就是有一两处 `_targetRect` 还在用旧算法。改完要全局搜这个字段的赋值点逐个核对。
+
+**三、还没有锚点时落到主屏，不能落到 `(0,0)`。** 主屏不一定包含原点：副屏在主屏左侧时，`(0,0)` 就在副屏上。
+
+### 尺寸要按目标屏自己的 DPI 换算
+
+多屏缩放不一致时，用主屏 DPI 算出的物理尺寸在副屏上会被裁掉或撑大：
+
+```csharp
+private static double GetScale(DisplayArea display)
+{
+    IntPtr hMonitor = Win32Interop.GetMonitorFromDisplayId(display.DisplayId);
+    GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, out uint dpiX, out _);
+    return dpiX / 96.0;
+}
+```
+
+### 任务栏缓存的校验位
+
+按显示器缓存任务栏窗口能省掉每帧的 `EnumWindows`，但**只判 `IsWindow` 不够**：它只能证明句柄还有效，不能证明它还是同一块屏的任务栏。热插拔、换位、改分辨率后句柄可能被复用而矩形已变，缓存就会永远返回错的那个，Z 序跟着错位。
+
+```csharp
+private static readonly Dictionary<IntPtr, (IntPtr Taskbar, RectNative Bounds)> TaskbarCache = new();
+
+if (TaskbarCache.TryGetValue(monitor, out var cached)
+    && cached.Taskbar != IntPtr.Zero
+    && IsWindow(cached.Taskbar)
+    && SameRect(cached.Bounds, GetMonitorBounds(monitor)))   // ← 校验位
+{
+    return cached.Taskbar;
+}
+```
+
+通用规则：**缓存值必须带上一个能检测「环境已变化」的校验位**（矩形、DPI、显示器数量），不能只依赖句柄有效性。
+
+---
+
+## 八、布局测量：先滑、后量
 
 ### 旧路径的问题
 
@@ -412,14 +513,14 @@ if (!_windowShown)
 {
     if (!Panel.HasDisplays) return;          // 空面板的高度不可信
     _heightDip = (int)Math.Ceiling(Math.Max(heightDip, MinHeightDip));
-    _targetRect = DpiLayout.ComputeBottomRight(...);
+    _targetRect = ComputeTargetRect();       // 走锚点，不按窗口位置
     return;
 }
 ```
 
 ---
 
-## 八、其余性能热点
+## 九、其余性能热点
 
 这几项单个影响不大，但都发生在 UI 线程上、且都在展开路径里，叠加起来就是「展开首帧掉帧」。
 
@@ -469,7 +570,7 @@ if (signature == _extrasSignature && populated) { SyncExtraValues(); return; }
 
 ---
 
-## 九、Momomi 迷你面板的对照
+## 十、Momomi 迷你面板的对照
 
 Momomi 的 `MiniWindow` / `WindowSlider` / `WindowChrome` / `WorkingSetTrimmer` 与 BetterScene 同源，结构与问题一一对应。
 
@@ -503,7 +604,7 @@ Momomi 的 `MiniWindow` / `WindowSlider` / `WindowChrome` / `WorkingSetTrimmer` 
 
 ---
 
-## 十、检查清单
+## 十一、检查清单
 
 改动这套代码后，按下面逐项确认：
 
@@ -515,4 +616,8 @@ Momomi 的 `MiniWindow` / `WindowSlider` / `WindowChrome` / `WorkingSetTrimmer` 
 - [ ] 首次展开（刚启动）与之后的展开手感一致
 - [ ] 系统关闭动画效果后，面板直接出现，不滑动
 - [ ] 显示器热插拔后展开，高度正确、不被裁切
+- [ ] 光标在主屏托盘点击 → 面板出现在主屏；光标在副屏 → 出现在副屏
+- [ ] 两台屏交替点击 10 次以上，没有一次弹错屏
+- [ ] 预热刚跑完就点击，仍落在光标所在屏（不是预热前的位置）
+- [ ] 跨 DPI 显示器上，面板尺寸按该屏自己的缩放换算，不被裁切
 - [ ] 工作集日志里，物理内存充裕时不再出现 `trimmed (flyout hidden)`

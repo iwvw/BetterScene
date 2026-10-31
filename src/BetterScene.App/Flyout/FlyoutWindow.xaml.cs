@@ -59,6 +59,16 @@ public sealed partial class FlyoutWindow : Window
 
     private long _lastWarmMs = MonoClock.Never;
 
+    /// <summary>
+    /// 最近一次"用户操作点"的屏幕坐标。
+    ///
+    /// 面板该出现在哪块屏，取决于用户在哪块屏点的，而不是窗口当前在哪块屏。
+    /// 每次转为可见时重新采集，所以托盘点击、热键、菜单项这些入口都自然覆盖。
+    /// </summary>
+    private bool _hasAnchor;
+    private int _anchorX;
+    private int _anchorY;
+
     public event Action? SettingsRequested;
 
     /// <summary>退场动画结束后触发。不用 <c>Closed</c> 这个名字，
@@ -92,7 +102,7 @@ public sealed partial class FlyoutWindow : Window
 
         TrySetBackdrop();
 
-        _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+        _targetRect = ComputeTargetRect();
         _appWindow.MoveAndResize(_targetRect);
         _appWindow.Hide();
 
@@ -204,8 +214,7 @@ public sealed partial class FlyoutWindow : Window
             if (!Panel.HasDisplays) return;
 
             _heightDip = (int)Math.Ceiling(Math.Max(heightDip, MinHeightDip));
-            _targetRect = DpiLayout.ComputeBottomRight(
-                _appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+            _targetRect = ComputeTargetRect();
             return;
         }
 
@@ -232,12 +241,16 @@ public sealed partial class FlyoutWindow : Window
     /// </summary>
     public void Toggle()
     {
+        if (!_wantVisible) CaptureAnchor();
+
         _wantVisible = !_wantVisible;
         ApplyIntent();
     }
 
     public void Show()
     {
+        if (!_wantVisible) CaptureAnchor();
+
         _wantVisible = true;
         ApplyIntent();
     }
@@ -246,6 +259,46 @@ public sealed partial class FlyoutWindow : Window
     {
         _wantVisible = false;
         ApplyIntent();
+    }
+
+    /// <summary>
+    /// 记下用户此刻的鼠标位置，作为面板该出现在哪块屏的依据。
+    ///
+    /// 必须在<b>转为可见的那一刻</b>采集，不能在构造窗口时：
+    /// 面板可能预热过很久、也可能刚从副屏收起来，那时记下的位置
+    /// 和用户这次点击的地方没有关系。
+    ///
+    /// 热键触发时鼠标可能停在别处，但那是用户自己的光标位置，
+    /// 比他上次打开面板的落点更接近"他现在在看哪块屏"。
+    /// </summary>
+    private void CaptureAnchor()
+    {
+        if (!GetCursorPos(out Point point)) return;
+
+        _hasAnchor = true;
+        _anchorX = point.X;
+        _anchorY = point.Y;
+    }
+
+    /// <summary>
+    /// 算出面板的目标落位矩形。
+    ///
+    /// 所有落点计算都必须走这里：只要有一处漏改、继续按窗口当前位置解析，
+    /// 就会表现为"大部分时候对、偶尔弹错屏"。
+    /// </summary>
+    private RectInt32 ComputeTargetRect()
+    {
+        if (_hasAnchor)
+        {
+            return DpiLayout.ComputeBottomRight(
+                _appWindow, _anchorX, _anchorY, _widthDip, _heightDip, MarginRight, MarginBottom);
+        }
+
+        // 还没采集过锚点（窗口刚构造、用户还没点过）时落到主屏。
+        // 不能用 (0,0) 兜底：主屏不一定包含原点，
+        // 多屏布局里副屏在主屏左侧时 (0,0) 就落在副屏上。
+        return DpiLayout.ComputeBottomRightOfPrimary(
+            _appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
     }
 
     /// <summary>
@@ -295,7 +348,7 @@ public sealed partial class FlyoutWindow : Window
         // 清掉上次残留的交互状态（可能还有展开的下拉框）。
         Panel.ResetInteractionState();
 
-        _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+        _targetRect = ComputeTargetRect();
 
         // 首次展开时还没有任何实测高度（面板刚创建、布局还没跑过），
         // 这时必须先量一次，否则会按默认高度滑入再跳一下。
@@ -328,8 +381,7 @@ public sealed partial class FlyoutWindow : Window
             if (_contentHeightDip > 0)
             {
                 _heightDip = (int)Math.Ceiling(Math.Max(_contentHeightDip, MinHeightDip));
-                _targetRect = DpiLayout.ComputeBottomRight(
-                    _appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+                _targetRect = ComputeTargetRect();
             }
         }
 
@@ -399,7 +451,7 @@ public sealed partial class FlyoutWindow : Window
 
         // 反向时不再重新测量：内容没变，重新测量会打断正在跑的那一帧，
         // 反而让折返看起来卡一下。
-        _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+        _targetRect = ComputeTargetRect();
 
         _slider.Animate(_targetRect, AnimationSettings.Scale(ShowDurationMs), easeIn: false, OnShownSettled);
         RestartAutoHideTimer();
@@ -419,7 +471,7 @@ public sealed partial class FlyoutWindow : Window
         Panel.SetWindowSettled(false);
         StopAutoHideTimer();
 
-        _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+        _targetRect = ComputeTargetRect();
 
         WindowChrome.PlaceBelowTaskbar(_hwnd);
         _slider.Animate(SlideMath.Hidden(_targetRect, SlideDirection.BottomUp),
@@ -507,9 +559,18 @@ public sealed partial class FlyoutWindow : Window
                 _warmedCount = Panel.DisplayCount;
             }
 
-            _targetRect = DpiLayout.ComputeBottomRight(
-                _appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
-
+            // 这里刻意<b>不</b>计算最终落点。
+            //
+            // 此刻窗口在 (-32000, -32000)，任何"按窗口位置找显示器"的
+            // 算法都会解析到离这个假坐标最近的那块屏——副屏在主屏左侧
+            // 或上方时就是副屏。一旦把那个结果写进 _targetRect，
+            // 窗口就被固化到副屏，下次展开再按窗口位置解析还是副屏，
+            // 自我强化、再也回不来。这正是"在主屏托盘点击却弹到副屏"的成因。
+            //
+            // 落点交给真正的显示时机（ShowFromHidden 里采集锚点后重算）。
+            // 这里只把窗口停回<b>已经算好的</b> _targetRect，不要重算：
+            // 停在屏幕外会让 MonitorFromWindow 解析到"离 -32000 最近"的屏，
+            // 后面任何按窗口位置取任务栏的地方都会跟着错。
             _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
             {
                 if (_windowShown || _closing) return;
@@ -563,8 +624,7 @@ public sealed partial class FlyoutWindow : Window
                 _heightDip = (int)Math.Ceiling(Math.Max(_contentHeightDip, MinHeightDip));
             }
 
-            RectInt32 target = DpiLayout.ComputeBottomRight(
-                _appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+            RectInt32 target = ComputeTargetRect();
 
             _targetRect = target;
 
@@ -602,7 +662,7 @@ public sealed partial class FlyoutWindow : Window
         if (Math.Abs(height - _heightDip) < 2) return;
 
         _heightDip = height;
-        _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+        _targetRect = ComputeTargetRect();
 
         RectInt32 current = WindowChrome.GetCurrentRect(_hwnd);
         if (current.Width <= 0 || current.Height <= 0)
@@ -673,7 +733,7 @@ public sealed partial class FlyoutWindow : Window
         {
             _appWindow.Hide();
             _windowShown = false;
-            _targetRect = DpiLayout.ComputeBottomRight(_appWindow, _widthDip, _heightDip, MarginRight, MarginBottom);
+            _targetRect = ComputeTargetRect();
             _appWindow.MoveAndResize(_targetRect);
 
             // 拖动关闭走的是另一条路径，同样要摘掉活动标记。

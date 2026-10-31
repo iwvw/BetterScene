@@ -37,6 +37,9 @@ public partial class App : Application
 
     public static OsdWindow? Osd { get; private set; }
 
+    /// <summary>外部控制接口（命名管道）。</summary>
+    public static ControlServer? Control { get; private set; }
+
     /// <summary>工作集回收的低频看门狗，只在界面长时间隐藏时生效。</summary>
     private static IDisposable? _memoryWatchdog;
 
@@ -87,6 +90,8 @@ public partial class App : Application
 
         BrightnessHub.Changed += OnBrightnessChanged;
 
+        StartControlServer();
+
         ActivationServer = new SingleInstanceActivationServer(ShowFromOtherProcess);
         ActivationServer.Start();
     }
@@ -95,6 +100,27 @@ public partial class App : Application
 
     /// <summary>供静态方法/后台服务使用的 UI 队列。</summary>
     public static DispatcherQueue? Ui => Current.UiQueue;
+
+    /// <summary>
+    /// 启动外部控制接口。
+    ///
+    /// 失败不能影响主程序：控制接口是附加能力，管道建不起来
+    /// （权限被策略限制、名字冲突）时程序仍然要能正常用。
+    /// </summary>
+    private void StartControlServer()
+    {
+        try
+        {
+            var handler = new ControlHandler();
+            Control = new ControlServer(handler.HandleAsync, UiQueue);
+            Control.Start();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "start control server failed");
+            Control = null;
+        }
+    }
 
     private void StartDisplays()
     {
@@ -364,6 +390,16 @@ public partial class App : Application
 
     public void Shutdown()
     {
+        try
+        {
+            Control?.Dispose();
+            Control = null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"stop control server failed: {ex.Message}");
+        }
+
         try
         {
             ActivationServer?.Stop();

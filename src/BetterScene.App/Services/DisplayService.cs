@@ -40,6 +40,9 @@ public sealed class DisplayService : IDisposable
     /// <summary>控制项写入结果。</summary>
     public event Action<string, byte, uint, bool>? ControlWritten;
 
+    /// <summary>硬件亮度读数（type = "brightness" 时返回）。</summary>
+    public event Action<DisplayMessage>? HardwareBrightnessRead;
+
     public IReadOnlyList<DisplayTarget> Displays { get; private set; } = Array.Empty<DisplayTarget>();
 
     public static string WorkerPath
@@ -161,6 +164,14 @@ public sealed class DisplayService : IDisposable
     /// <summary>读取某台显示器可调的扩展控制项。结果通过 ControlsRead 事件返回。</summary>
     public void ReadControls(string id) => Send(new { type = "read-controls", id });
 
+    /// <summary>
+    /// 当场读回硬件亮度。结果通过 <see cref="HardwareBrightnessRead"/> 事件返回。
+    ///
+    /// 和 <c>Displays</c> 里缓存的 Brightness 不同：那个是枚举时的快照，
+    /// 写入成功与否都不会更新。判断「写入有没有真的落到背光上」只能靠这个。
+    /// </summary>
+    public void ReadHardwareBrightness(string id) => Send(new { type = "read-brightness", id });
+
     /// <summary>写入一个扩展控制项（高频，走合并队列）。</summary>
     public void WriteControl(string id, byte code, uint value) =>
         Send(new { type = "write-control", id, code, value });
@@ -237,6 +248,11 @@ public sealed class DisplayService : IDisposable
                     message.Code ?? 0,
                     (uint)(message.Value ?? 0),
                     message.Ok ?? false);
+            }
+            else if (message.Type == "brightness")
+            {
+                _reported = true;
+                HardwareBrightnessRead?.Invoke(message);
             }
             else if (message.Type == "heartbeat")
             {

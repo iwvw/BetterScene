@@ -5,6 +5,7 @@
   </Configurations>
   <Folder Name="/src/">
     <Project Path="src/BetterScene.App/BetterScene.App.csproj" />
+    <Project Path="src/BetterScene.Cli/BetterScene.Cli.csproj" />
     <Project Path="src/BetterScene.Core/BetterScene.Core.csproj" />
     <Project Path="src/BetterScene.Displays/BetterScene.Displays.csproj" />
     <Project Path="src/BetterScene.Host/BetterScene.Host.csproj" />

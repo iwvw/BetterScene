@@ -181,15 +181,59 @@ public sealed partial class OsdWindow : Window
         _level = clamped;
         UpdateFill();
 
-        // 关联模式下必须整体下发：否则单台写入会被其它显示器的旧值拉回，
-        // 表现为拖动时进度条来回弹。
+        // 拖动中只记录意图，不写硬件——和 mini 面板的滑块同一套策略。
+        // OSD 自己就是拖动来源，每帧写硬件会把管道灌满。
         if (BrightnessHub.Linked || _currentDisplayId is null)
         {
-            BrightnessHub.ApplyAll(clamped);
+            BrightnessHub.SetIntentAll(clamped);
         }
         else
         {
-            BrightnessHub.Set(_currentDisplayId, clamped);
+            BrightnessHub.SetIntent(_currentDisplayId, clamped);
+        }
+
+        ScheduleCommit();
+    }
+
+    private readonly object _commitGate = new();
+    private System.Threading.Timer? _commitTimer;
+
+    private const int CommitDebounceMs = 200;
+
+    private void ScheduleCommit()
+    {
+        lock (_commitGate)
+        {
+            _commitTimer ??= new System.Threading.Timer(
+                _ => Commit(), null, Timeout.Infinite, Timeout.Infinite);
+
+            _commitTimer.Change(CommitDebounceMs, Timeout.Infinite);
+        }
+    }
+
+    private void Commit()
+    {
+        lock (_commitGate)
+        {
+            _commitTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        try
+        {
+            if (BrightnessHub.Linked || _currentDisplayId is null)
+            {
+                BrightnessHub.CommitAll();
+            }
+            else
+            {
+                BrightnessHub.Commit(_currentDisplayId);
+            }
+
+            App.Displays?.FlushBrightness();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"osd brightness commit failed: {ex.Message}");
         }
     }
 

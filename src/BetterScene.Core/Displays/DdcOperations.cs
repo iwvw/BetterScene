@@ -204,6 +204,25 @@ internal static class DdcOperations
         return codes;
     }
 
+    /// <summary>
+    /// 确定这台显示器用哪个 VCP 代码读写亮度。
+    ///
+    /// 候选只有真正表示亮度的代码：
+    /// <list type="bullet">
+    ///   <item><c>0x10</c> 标准亮度（MCCS 规范）</item>
+    ///   <item><c>0x13</c> 部分面板把背光放在这里</item>
+    ///   <item><c>0x6B</c> 少数型号的私有亮度码</item>
+    /// </list>
+    ///
+    /// <b>0x12 是对比度，绝不在候选里。</b> 早期版本把它列进候选，
+    /// 结果 0x10 偶发读失败时探测会一路落到 0x12，此后所有"设亮度"
+    /// 全写进了对比度——界面和设置里显示亮度正常，硬件背光却纹丝不动，
+    /// 表现为"调了没反应，实际值停在别处"。这种降级比失败更糟：
+    /// 它静默地把一个错误的映射关系固化下来，用户完全无法察觉。
+    ///
+    /// 探测全部失败时保持 0x10：标准码是最合理的默认值，
+    /// 后续写入失败会走各自的错误处理，不会污染到别的控制项。
+    /// </summary>
     public static byte DetermineBrightnessVcp(DdcSession session, DisplayTarget target, string capabilities, WorkerSettings settings)
     {
         byte forced = MonitorRules.Resolve(settings, target.FirmwareId);
@@ -213,16 +232,33 @@ internal static class DdcOperations
         HashSet<byte>? reported = capabilities.Length == 0 ? null : ParseCapabilityCodes(capabilities);
         if (!session.TryGet(target.Id, out IntPtr handle)) return 0x10;
 
-        foreach (byte candidate in new byte[] { 0x10, 0x13, 0x6B, 0x12 })
+        // 能力串里明确声明了亮度码时，直接用声明值。
+        // 声明优先于探测：这是显示器自己说的，比猜可靠。
+        if (reported is not null)
         {
-            if (reported is not null && !reported.Contains(candidate)) continue;
-            if (DdcOperations.Get(handle, candidate, out _, out _, out _))
+            foreach (byte candidate in BrightnessVcp.Candidates)
             {
+                if (!reported.Contains(candidate)) continue;
+
                 Thread.Sleep(settings.CheckVcpWaitMs);
                 return candidate;
             }
-            Thread.Sleep(settings.CheckVcpWaitMs);
+
+            // 能力串里一个亮度码都没有，说明这台屏的 DDC 能力串不可信
+            // （常见于能力串读取不完整）。退回探测。
         }
+
+        byte? found = BrightnessVcp.Probe(
+            candidate => DdcOperations.Get(handle, candidate, out _, out _, out _),
+            settings.CheckVcpWaitMs);
+
+        if (found is { } vcp)
+        {
+            Log.Info($"brightness vcp for {target.FirmwareId} resolved to 0x{vcp:X2}");
+            return vcp;
+        }
+
+        Log.Warn($"brightness vcp probe failed for {target.FirmwareId}, assuming 0x10");
         return 0x10;
     }
 }

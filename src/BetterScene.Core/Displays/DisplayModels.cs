@@ -78,6 +78,33 @@ public sealed class DisplayMessage
 
     /// <summary>VCP 代码，用于控制项读写。</summary>
     public byte? Code { get; init; }
+
+    /// <summary>
+    /// 从硬件读回的亮度百分比（type = "brightness" 时返回）。
+    ///
+    /// 注意它和 <see cref="DisplayTarget.Brightness"/> 的区别：后者是
+    /// 枚举显示器时读到并缓存的快照，这个字段是**当场重新读硬件**的结果。
+    /// 排查「设了 78% 但硬件停在 35%」必须用这个，不能用缓存值。
+    /// </summary>
+    public int? HardwareBrightness { get; init; }
+
+    /// <summary>硬件亮度读数是否可信。false 时 HardwareBrightness 为 null。</summary>
+    public bool? HardwareBrightnessOk { get; init; }
+
+    /// <summary>硬件亮度读不到时的原因。</summary>
+    public string? HardwareBrightnessError { get; init; }
+
+    /// <summary>实际用于读写亮度的通道（ddc / wmi / gamma）。</summary>
+    public string? Backend { get; init; }
+
+    /// <summary>DDC 通道下实际使用的 VCP 代码。</summary>
+    public byte? Vcp { get; init; }
+
+    /// <summary>原始硬件值（DDC 是 VCP 原始值，WMI 是 0–100）。</summary>
+    public int? RawValue { get; init; }
+
+    /// <summary>原始硬件值的上限。</summary>
+    public int? RawMaximum { get; init; }
 }
 
 public sealed class WorkerSettings

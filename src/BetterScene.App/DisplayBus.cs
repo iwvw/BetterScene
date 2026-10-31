@@ -50,6 +50,8 @@ public static class DisplayBus
 
     public static void ReadControls(string id) => _service?.ReadControls(id);
 
+    public static void ReadHardwareBrightness(string id) => _service?.ReadHardwareBrightness(id);
+
     public static void WriteControl(string id, byte code, uint value) => _service?.WriteControl(id, code, value);
 
     public static void WriteControlSync(string id, byte code, uint value) => _service?.WriteControlSync(id, code, value);

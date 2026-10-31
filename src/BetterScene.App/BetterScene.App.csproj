@@ -105,6 +105,48 @@
   </Target>
 
   <!--
+    bsctl 是外部控制接口的命令行前端，必须跟主程序一起分发：
+    用户脚本调的是它，缺了控制接口就等于没做。
+
+    必须跟随主程序的 SelfContained 设置，不能固定成框架依赖。
+    合并版目录里带的是自包含运行时（hostfxr 就在旁边），此时 bsctl 若声明
+    "framework: Microsoft.NETCore.App"，hostfxr 会去全局找框架——本机
+    只有 x86 那一套，于是报 "No frameworks were found" 直接起不来。
+    这和 worker 当年踩的是同一个坑，用同一套解法。
+  -->
+  <Target Name="BuildControlCli" BeforeTargets="Build">
+    <MSBuild Projects="..\BetterScene.Cli\BetterScene.Cli.csproj"
+             Targets="Restore;Build;GetTargetPath"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)">
+      <Output TaskParameter="TargetOutputs" ItemName="ControlCliOutputs" />
+    </MSBuild>
+  </Target>
+
+  <Target Name="CopyControlCli" AfterTargets="Build" DependsOnTargets="BuildControlCli">
+    <PropertyGroup>
+      <_ControlCliDir>%(ControlCliOutputs.RootDir)%(ControlCliOutputs.Directory)</_ControlCliDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <ControlCliFiles Include="$(_ControlCliDir)bsctl.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ControlCliFiles)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="PublishControlCli" AfterTargets="Publish" DependsOnTargets="BuildControlCli">
+    <PropertyGroup>
+      <_ControlCliDir>%(ControlCliOutputs.RootDir)%(ControlCliOutputs.Directory)</_ControlCliDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <ControlCliPublishFiles Include="$(_ControlCliDir)bsctl.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ControlCliPublishFiles)"
+          DestinationFolder="$(PublishDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
     WinUI 3 必须有 .pri 才能加载 XAML 资源字典。
     PRI 只在 Build 阶段生成，publish 不会带上它，产物里缺 .pri 会导致
     程序启动即崩在 Microsoft.UI.Xaml.dll（0xC000027B）——表现为"双击没反应"。

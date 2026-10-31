@@ -365,6 +365,190 @@ public sealed class DisplayWorker
         }
     }
 
+    /// <summary>
+    /// 当场从硬件读回亮度，不做任何缓存。
+    ///
+    /// 和枚举显示器时读到的 <c>DisplayTarget.Brightness</c> 不同：那是
+    /// 枚举那一刻的快照，之后写入成功与否都不会更新它。要判断
+    /// 「设置里写 78% 但背光还在 35%」必须走这里。
+    ///
+    /// 三条通道各自的读法：
+    /// <list type="bullet">
+    ///   <item>DDC：读当前亮度 VCP（含高电平亮度分支）</item>
+    ///   <item>WMI：读笔电内屏背光</item>
+    ///   <item>Gamma：读当前 gamma ramp 换算出的白点百分比</item>
+    /// </list>
+    /// </summary>
+    public DisplayMessage ReadHardwareBrightness(string id)
+    {
+        DisplayTarget? target;
+        lock (_gate)
+        {
+            if (!_targets.TryGetValue(id, out target))
+            {
+                return new DisplayMessage
+                {
+                    Type = "brightness",
+                    Id = id,
+                    HardwareBrightnessOk = false,
+                    HardwareBrightnessError = "找不到该显示器",
+                };
+            }
+        }
+
+        try
+        {
+            return target.Backend switch
+            {
+                DisplayBackend.Ddc => ReadDdcBrightness(target),
+                DisplayBackend.Wmi => ReadWmiBrightness(target),
+                DisplayBackend.Gamma => ReadGammaBrightness(target),
+                _ => new DisplayMessage
+                {
+                    Type = "brightness",
+                    Id = id,
+                    Backend = target.Backend.ToString().ToLowerInvariant(),
+                    HardwareBrightnessOk = false,
+                    HardwareBrightnessError = "该显示器没有可用的亮度通道",
+                },
+            };
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"read hardware brightness failed for {target.FirmwareId}: {ex.Message}");
+            return new DisplayMessage
+            {
+                Type = "brightness",
+                Id = id,
+                Backend = target.Backend.ToString().ToLowerInvariant(),
+                HardwareBrightnessOk = false,
+                HardwareBrightnessError = ex.Message,
+            };
+        }
+    }
+
+    private DisplayMessage ReadDdcBrightness(DisplayTarget target)
+    {
+        if (!_session.TryGet(target.Id, out IntPtr handle))
+        {
+            return new DisplayMessage
+            {
+                Type = "brightness",
+                Id = target.Id,
+                Backend = "ddc",
+                Vcp = target.BrightnessVcp,
+                HardwareBrightnessOk = false,
+                HardwareBrightnessError = "拿不到 DDC 句柄",
+            };
+        }
+
+        // 高电平亮度（部分面板把背光放在非标准位置，值是 0–max 的原始刻度）。
+        if (target.UseHighLevelBrightness)
+        {
+            if (!DdcOperations.GetHighLevel(handle, out uint min, out uint current, out uint max, out int hlError))
+            {
+                return new DisplayMessage
+                {
+                    Type = "brightness",
+                    Id = target.Id,
+                    Backend = "ddc",
+                    Vcp = target.BrightnessVcp,
+                    HardwareBrightnessOk = false,
+                    HardwareBrightnessError = DdcErrorClassifier.Describe(hlError),
+                };
+            }
+
+            return new DisplayMessage
+            {
+                Type = "brightness",
+                Id = target.Id,
+                Backend = "ddc",
+                Vcp = target.BrightnessVcp,
+                HardwareBrightness = ToPercent((int)current, (int)min, (int)max),
+                HardwareBrightnessOk = true,
+                RawValue = (int)current,
+                RawMaximum = (int)max,
+            };
+        }
+
+        DdcSentinel.Begin("read-brightness", target.Id);
+        try
+        {
+            if (!DdcOperations.Get(handle, target.BrightnessVcp, out uint value, out uint maximum, out int error))
+            {
+                return new DisplayMessage
+                {
+                    Type = "brightness",
+                    Id = target.Id,
+                    Backend = "ddc",
+                    Vcp = target.BrightnessVcp,
+                    HardwareBrightnessOk = false,
+                    HardwareBrightnessError = DdcErrorClassifier.Describe(error),
+                };
+            }
+
+            int max = maximum == 0 ? 100 : (int)maximum;
+
+            return new DisplayMessage
+            {
+                Type = "brightness",
+                Id = target.Id,
+                Backend = "ddc",
+                Vcp = target.BrightnessVcp,
+                HardwareBrightness = ToPercent((int)value, 0, max),
+                HardwareBrightnessOk = true,
+                RawValue = (int)value,
+                RawMaximum = max,
+            };
+        }
+        finally
+        {
+            DdcSentinel.End();
+        }
+    }
+
+    private static DisplayMessage ReadWmiBrightness(DisplayTarget target)
+    {
+        if (!WmiBrightness.TryGet(out int level))
+        {
+            return new DisplayMessage
+            {
+                Type = "brightness",
+                Id = target.Id,
+                Backend = "wmi",
+                HardwareBrightnessOk = false,
+                HardwareBrightnessError = "WMI 背光读取失败",
+            };
+        }
+
+        return new DisplayMessage
+        {
+            Type = "brightness",
+            Id = target.Id,
+            Backend = "wmi",
+            HardwareBrightness = level,
+            HardwareBrightnessOk = true,
+            RawValue = level,
+            RawMaximum = 100,
+        };
+    }
+
+    private static DisplayMessage ReadGammaBrightness(DisplayTarget target)
+    {
+        int level = GammaBrightness.ReadLevel(target.GdiName);
+
+        return new DisplayMessage
+        {
+            Type = "brightness",
+            Id = target.Id,
+            Backend = "gamma",
+            HardwareBrightness = level,
+            HardwareBrightnessOk = true,
+            RawValue = level,
+            RawMaximum = 100,
+        };
+    }
+
     public bool SetBrightness(string id, int percent)
     {
         if (_ddcBroken)
@@ -394,6 +578,11 @@ public sealed class DisplayWorker
         if (task.Wait(TimeSpan.FromSeconds(6)))
         {
             if (failure is not null) throw failure;
+
+            // 返回值 false 过去被完全忽略，导致「写入没生效」没有任何痕迹。
+            // 这里补一条，至少能从日志看出是哪台屏、哪个值没写进去。
+            if (!result) Log.Warn($"set brightness {percent}% failed for {id}");
+
             return result;
         }
 
@@ -413,13 +602,41 @@ public sealed class DisplayWorker
         int clamped = Math.Clamp(percent, 0, 100);
         target.Brightness = clamped;
 
-        return target.Backend switch
+        bool ok = target.Backend switch
         {
             DisplayBackend.Ddc => SetDdcWithHealth(target, clamped),
-            DisplayBackend.Wmi => WmiBrightness.TrySet(clamped, target.WmiInstance),
+            DisplayBackend.Wmi => TrySetWmi(target, clamped),
             DisplayBackend.Gamma => GammaBrightness.TrySet(target.GdiName, clamped, out _),
             _ => false,
         };
+
+        if (!ok)
+        {
+            Log.Warn($"brightness write {clamped}% rejected by {target.Backend} for {target.FirmwareId}");
+        }
+
+        return ok;
+    }
+
+    /// <summary>
+    /// WMI 写入的包装：把异常也记下来。
+    ///
+    /// <see cref="WmiBrightness.TrySet"/> 内部已有 try/catch，但高频调用时
+    /// WMI 查询可能抛出各种 COM 异常。这里再兜一层并记录，
+    /// 避免"写入失败但日志里什么都没有"。
+    /// </summary>
+    private static bool TrySetWmi(DisplayTarget target, int level)
+    {
+        try
+        {
+            return WmiBrightness.TrySet(level, target.WmiInstance);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"wmi set brightness {level}% threw for {target.FirmwareId}: " +
+                     $"{ex.GetType().Name} {ex.Message}");
+            return false;
+        }
     }
 
     private bool SetDdcWithHealth(DisplayTarget target, int percent)

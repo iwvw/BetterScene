@@ -91,7 +91,12 @@ internal static class Program
             {
                 try
                 {
-                    worker.SetBrightness(id, value);
+                    bool ok = worker.SetBrightness(id, value);
+
+                    // 写入结果必须记下来。之前这里完全忽略返回值，
+                    // 于是「WMI 写入被拒」这类故障只表现为"亮度不动"，
+                    // 日志里连一行都没有，只能靠猜。
+                    Log.Debug($"throttle flush {id} = {value} -> ok={ok}");
                 }
                 catch (Exception ex)
                 {
@@ -213,11 +218,27 @@ internal static class Program
                             break;
                         }
 
+                    case "read-brightness":
+                        {
+                            string id = doc.RootElement.GetProperty("id").GetString() ?? string.Empty;
+                            Log.Info($"reading hardware brightness for {id}");
+
+                            DisplayMessage message = worker.ReadHardwareBrightness(id);
+                            Send(message);
+
+                            Log.Info($"hardware brightness for {id}: " +
+                                     $"{message.HardwareBrightness}% " +
+                                     $"raw={message.RawValue}/{message.RawMaximum} " +
+                                     $"backend={message.Backend} vcp=0x{message.Vcp:X2} " +
+                                     $"ok={message.HardwareBrightnessOk} " +
+                                     $"error='{message.HardwareBrightnessError}'");
+                            break;
+                        }
+
                     case "read-controls":
                         {
                             string id = doc.RootElement.GetProperty("id").GetString() ?? string.Empty;
                             Log.Info($"reading controls for {id}");
-
                             DisplayTarget? target = worker.Displays.FirstOrDefault(t =>
                                 string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
 

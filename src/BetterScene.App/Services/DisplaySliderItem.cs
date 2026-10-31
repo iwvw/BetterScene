@@ -13,7 +13,14 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     private int _level;
     private bool _suppress;
     private long _lastUserWriteMs = MonoClock.Never;
-    private const int FinalFlushDelayMs = 260;
+
+    /// <summary>
+    /// 拖动停止后多久把最终值写进硬件。
+    ///
+    /// 取 PowerToys 的 <c>SliderCommitDebounceMs = 200</c>。太短会把拖动
+    /// 过程中的中间值也提交出去（屏幕上先跳一下），太长松手后能感觉到迟滞。
+    /// </summary>
+    private const int CommitDebounceMs = 200;
 
     public DisplaySliderItem(string id, bool detailed = false, bool group = false)
     {
@@ -382,7 +389,24 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
             // 夹到当前有效范围：HDR 下下限是驱动能接受的最小值（50%），
             // 再往下写会被驱动直接拒绝，滑块动但画面不变，看起来像卡住。
             int clamped = Math.Clamp(value, (int)LevelMinimum, (int)LevelMaximum);
-            if (_level == clamped) return;
+
+            if (_level == clamped)
+            {
+                // 值没变也要排一次提交。
+                //
+                // 早退直接 return 会漏掉一个真实场景：上次拖到 100 后
+                // 硬件被别的途径改掉了（系统滑块、快捷键、显示器实体按键），
+                // 而 _level 仍是 100。这时再拖到 100，XAML 送来的还是 100，
+                // 被判定为"没变化"而不排程提交，硬件就永远停在别的值上——
+                // 表现正是"拖到头偶尔不生效"，而拖到 99 以下都正常
+                // （那些值每次都变，每次都会排程）。
+                //
+                // 提交本身是幂等的：硬件已经是目标值时多写一次无害，
+                // 收敛器也有去重。
+                if (!_suppress && CanControl) ScheduleCommit();
+
+                return;
+            }
 
             _level = clamped;
             OnPropertyChanged();
@@ -392,55 +416,81 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
             _lastUserWriteMs = MonoClock.NowMs;
 
+            // 只记录意图，不写硬件。UI 立刻跟随，手感不受影响。
+            //
+            // 硬件写入交给 debounce 定时器（见 ScheduleCommit）。这是
+            // PowerToys（SliderCommitScheduler，200ms）和 Twinkle Tray
+            // （syncBrightness，500ms 轮询）的共同做法：拖动过程中每帧
+            // 都写硬件会把管道灌满，一台屏的洪水能把另一台堵住几秒。
+            //
             // 传 clamped：滑块受 Minimum/Maximum 限制，正常交互下它等于 value。
-            // 真正需要区分"用户意图 vs 实际可表达值"的地方在 BrightnessHub.Set，
+            // 真正需要区分"用户意图 vs 实际可表达值"的地方在 BrightnessHub，
             // 那里会存意图、写实际。
             if (IsGroup || BrightnessHub.Linked)
             {
-                BrightnessHub.ApplyAll(clamped, notify: false);
+                BrightnessHub.SetIntentAll(clamped);
             }
             else
             {
-                BrightnessHub.Set(Id, clamped, notify: false);
+                BrightnessHub.SetIntent(Id, clamped);
             }
 
-            ScheduleFinalFlush();
+            ScheduleCommit();
         }
     }
 
-    private readonly object _flushGate = new();
-    private Timer? _flushTimer;
+    private readonly object _commitGate = new();
+    private Timer? _commitTimer;
 
     /// <summary>
-    /// 拖动结束后补一次 flush。
+    /// 拖动停止后把最终值写进硬件。
     ///
-    /// 不能每次 setter 都起一个 Task：拖一次 60 帧就是 60 个 Task + 60 个 Timer，
-    /// 而且会发出 60 次 flush 命令。这里用实例级单槽定时器，
-    /// 只在第一次进入延迟状态时创建，后续调用直接返回。
+    /// 每次值变化都重置定时器，只有停手才真正提交一次——和 PowerToys 的
+    /// <c>SliderCommitScheduler</c> 完全一致（那边是 <c>timer.Stop();
+    /// timer.Start();</c>，间隔 200ms）。
+    ///
+    /// 为什么不用「首次进入延迟后就不再重置」的旧写法：那等于固定延迟，
+    /// 拖动持续两秒的话会在中途就提交一次中间值，屏幕上先跳一下。
+    /// debounce 保证整个拖动过程只在结束时写一次。
     /// </summary>
-    private void ScheduleFinalFlush()
+    private void ScheduleCommit()
     {
-        lock (_flushGate)
+        lock (_commitGate)
         {
-            if (_flushTimer is not null) return;
-
-            _flushTimer = new Timer(_ =>
+            if (_commitTimer is null)
             {
-                lock (_flushGate)
-                {
-                    _flushTimer?.Dispose();
-                    _flushTimer = null;
-                }
+                _commitTimer = new Timer(_ => Commit(), null, Timeout.Infinite, Timeout.Infinite);
+            }
 
-                try
-                {
-                    App.Displays?.FlushBrightness();
-                }
-                catch (Exception ex)
-                {
-                    Log.Warn($"final flush failed: {ex.Message}");
-                }
-            }, null, FinalFlushDelayMs, Timeout.Infinite);
+            _commitTimer.Change(CommitDebounceMs, Timeout.Infinite);
+        }
+    }
+
+    private void Commit()
+    {
+        lock (_commitGate)
+        {
+            _commitTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        try
+        {
+            if (IsGroup || BrightnessHub.Linked)
+            {
+                BrightnessHub.CommitAll();
+            }
+            else
+            {
+                BrightnessHub.Commit(Id);
+            }
+
+            // 再补一次 flush：worker 侧还有 100ms 节流，
+            // 让它立刻把最后这个值写出去，而不是等下一个窗口。
+            App.Displays?.FlushBrightness();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"brightness commit failed: {ex.Message}");
         }
     }
 

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>bsctl</AssemblyName>
+    <RootNamespace>BetterScene.Cli</RootNamespace>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BetterScene.Core\BetterScene.Core.csproj" />
+  </ItemGroup>
+
+</Project>

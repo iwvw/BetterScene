@@ -100,10 +100,24 @@ dotnet build BetterScene.slnx -p:Platform=x64
 BetterScene.slnx
 ├─ src/BetterScene.App/        WinUI 3 主界面、迷你面板、托盘
 ├─ src/BetterScene.Core/       共享逻辑：设置、主题、日志、显示器控制
+├─ src/BetterScene.Cli/        bsctl：外部控制接口的命令行前端
 ├─ src/BetterScene.Displays/   显示器工作者（独立进程）
 ├─ tests/BetterScene.Core.Tests/
 └─ build/                      打包与资源生成脚本
 ```
+
+## 外部控制接口
+
+程序对外提供一套控制接口，供脚本和其他程序调用：设亮度、切刷新率/分辨率、换场景。
+
+```powershell
+bsctl brightness set --value 35
+bsctl display refresh set --hz 60
+bsctl --json state
+```
+
+- 接入方式、各语言示例、限制：[docs/integration.md](docs/integration.md)
+- 命令与 JSON 协议参考：[docs/control-api.md](docs/control-api.md)
 
 ## 已知限制
 

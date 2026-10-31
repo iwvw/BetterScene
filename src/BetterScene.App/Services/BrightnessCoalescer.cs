@@ -24,6 +24,9 @@ public sealed class BrightnessCoalescer : IDisposable
         public int Written;
         public bool InFlight;
         public bool HasTarget;
+
+        /// <summary>上次实际下发到管道的时刻（<see cref="MonoClock"/> 口径）。</summary>
+        public long LastSentMs = MonoClock.Never;
     }
 
     private readonly object _gate = new();
@@ -34,6 +37,23 @@ public sealed class BrightnessCoalescer : IDisposable
 
     /// <summary>停止调节多久后补写一次，确保最终值一定落地。</summary>
     private const int SettleDelayMs = 120;
+
+    /// <summary>
+    /// 两次实际下发之间的最小间隔。
+    ///
+    /// 为什么需要它：这个收敛器原来每帧都往管道写一行。拖动 90 帧就是
+    /// 90 条消息，而 worker 侧一次 DDC 写入要 60ms、还有 100ms 节流，
+    /// 完全消化不了。管道缓冲区一旦堆满，<c>StreamWriter.WriteLine</c>
+    /// 就会阻塞，而它持着发送锁——于是**一台屏的洪水把另一台屏堵在
+    /// 后面**，表现就是「拖动时外接屏两秒不动，内屏却在跟」。
+    ///
+    /// 限速在这里做，而不是只靠 worker 的节流器：worker 那层是
+    /// 「合并后写硬件」，这一层是「别把消息灌爆管道」，两件事。
+    ///
+    /// 80ms 比 worker 的 100ms 略小，保证硬件那边始终有新鲜值可写，
+    /// 又不会让管道积压。
+    /// </summary>
+    private const int MinSendIntervalMs = 80;
 
     public BrightnessCoalescer(Action<string, int> write)
     {
@@ -85,9 +105,24 @@ public sealed class BrightnessCoalescer : IDisposable
                     return;
                 }
 
+                // 距上次下发不足最小间隔：把「继续排空」交给 settle 定时器，
+                // 现在先退出。这不是丢弃——slot 里 HasTarget 仍是 true，
+                // 定时器到点会再起一个 Pump 把最新值写出去。
+                //
+                // 不用 Thread.Sleep 等：那样会占着线程池线程空转，
+                // 而且拖动 90 帧就是 90 次 80ms 的睡眠，线程池会被占满。
+                long since = MonoClock.NowMs - slot.LastSentMs;
+                if (slot.LastSentMs != MonoClock.Never && since >= 0 && since < MinSendIntervalMs)
+                {
+                    slot.InFlight = false;
+                    _settleTimer.Change(SettleDelayMs, Timeout.Infinite);
+                    return;
+                }
+
                 value = slot.Target;
                 slot.Written = value;
                 slot.HasTarget = false;
+                slot.LastSentMs = MonoClock.NowMs;
             }
 
             try
@@ -120,24 +155,38 @@ public sealed class BrightnessCoalescer : IDisposable
         }
     }
 
-    /// <summary>停止调节后兜底：把还差一点没落地的目标值补写出去。</summary>
+    /// <summary>
+    /// 停止调节后兜底：把还差一点没落地的目标值补写出去。
+    ///
+    /// 必须先在锁内把 <c>InFlight</c> 占住再起 Pump，和
+    /// <see cref="SetTarget"/> 的做法一致。少了这一步会有两个 Pump
+    /// 同时 drain 同一个槽位：它们互相看不见对方的写入，最后一个值
+    /// 可能被先完成的那条覆盖回去，表现为「松手后亮度停在中间值」。
+    /// 这个竞态只在快速拖动（槽位频繁被重新填充）时出现，
+    /// 慢速拖动几乎撞不到，所以很难复现。
+    /// </summary>
     private void Settle()
     {
-        List<KeyValuePair<string, int>> pending;
+        List<string> pending;
 
         lock (_gate)
         {
             if (_disposed) return;
 
             pending = _slots
-                .Where(pair => pair.Value.HasTarget)
-                .Select(pair => new KeyValuePair<string, int>(pair.Key, pair.Value.Target))
+                .Where(pair => pair.Value.HasTarget && !pair.Value.InFlight)
+                .Select(pair => pair.Key)
                 .ToList();
+
+            foreach (string key in pending)
+            {
+                _slots[key].InFlight = true;
+            }
         }
 
-        foreach (var pair in pending)
+        foreach (string key in pending)
         {
-            _ = Task.Run(() => Pump(pair.Key));
+            _ = Task.Run(() => Pump(key));
         }
     }
 

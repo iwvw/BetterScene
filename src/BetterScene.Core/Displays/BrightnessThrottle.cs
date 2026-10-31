@@ -55,7 +55,6 @@ public sealed class BrightnessThrottle : IDisposable
 
         _signal.Set();
     }
-
     public void FlushNow()
     {
         lock (_gate)
@@ -121,8 +120,7 @@ public sealed class BrightnessThrottle : IDisposable
                 continue;
             }
 
-            _signal.WaitOne(waitMs);
-        }
+            _signal.WaitOne(waitMs);        }
     }
 
     public void Dispose()

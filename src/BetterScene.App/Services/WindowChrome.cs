@@ -119,22 +119,27 @@ internal static class WindowChrome
     /// 而面板展开、收起、拖动、改高度每一条路径都会调到这里，
     /// 全部发生在 UI 线程上，直接体现为展开首帧掉帧。
     ///
-    /// 任务栏只在显示器热插拔或 Explorer 重启时换 HWND，
-    /// 所以缓存失效判定用 <c>IsWindow</c> 就够。
+    /// <b>缓存里必须带上显示器矩形作为校验位。</b>
+    /// 只判 <c>IsWindow</c> 不够：它只能证明句柄还有效，
+    /// 不能证明它还是<b>同一块屏</b>的任务栏。显示器热插拔、换位、
+    /// 改分辨率之后，显示器句柄可能被复用而矩形已经变了，
+    /// 缓存就会永远返回错的那个任务栏，Z 序（压在任务栏下方）跟着错位。
     /// </summary>
-    private static readonly Dictionary<IntPtr, IntPtr> TaskbarCache = new();
+    private static readonly Dictionary<IntPtr, (IntPtr Taskbar, RectNative Bounds)> TaskbarCache = new();
 
     private static IntPtr FindTaskbarForWindow(IntPtr hwnd)
     {
         IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        RectNative bounds = GetMonitorBounds(monitor);
 
         lock (TaskbarCache)
         {
-            if (TaskbarCache.TryGetValue(monitor, out IntPtr cached)
-                && cached != IntPtr.Zero
-                && IsWindow(cached))
+            if (TaskbarCache.TryGetValue(monitor, out var cached)
+                && cached.Taskbar != IntPtr.Zero
+                && IsWindow(cached.Taskbar)
+                && SameRect(cached.Bounds, bounds))
             {
-                return cached;
+                return cached.Taskbar;
             }
         }
 
@@ -166,11 +171,31 @@ internal static class WindowChrome
         {
             lock (TaskbarCache)
             {
-                TaskbarCache[monitor] = found;
+                TaskbarCache[monitor] = (found, bounds);
             }
         }
 
         return found;
+    }
+
+    private static bool SameRect(RectNative a, RectNative b) =>
+        a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
+
+    private static RectNative GetMonitorBounds(IntPtr monitor)
+    {
+        if (monitor == IntPtr.Zero) return default;
+
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        return GetMonitorInfoW(monitor, ref info) ? info.rcMonitor : default;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RectNative rcMonitor;
+        public RectNative rcWork;
+        public int dwFlags;
     }
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -308,6 +333,9 @@ internal static class WindowChrome
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFO info);
 }
 
 internal static class DpiLayout
@@ -315,11 +343,46 @@ internal static class DpiLayout
     private const int BaseDpi = 96;
     private const int MdtEffectiveDpi = 0;
 
-    public static Windows.Graphics.RectInt32 ComputeBottomRight(Microsoft.UI.Windowing.AppWindow window, int widthDip, int heightDip, int marginRightDip, int marginBottomDip)
+    /// <summary>
+    /// 按<b>屏幕坐标锚点</b>算右下角落位矩形。
+    ///
+    /// 锚点必须是用户操作的位置（光标、托盘图标），不能用窗口自己的位置：
+    /// <c>GetFromWindowId</c> 回答的是"窗口现在在哪块屏"，而不是
+    /// "用户点的是哪块屏"。窗口位置一旦漂移（离屏预热、动画、上一次
+    /// 落点没更新），它就会忠实地把错误位置继续放大，表现为
+    /// "在主屏托盘点击，面板却弹到副屏"。
+    ///
+    /// 宽度和高度按目标显示器自己的 DPI 换算：多屏缩放不一致时，
+    /// 用主屏 DPI 算出来的物理尺寸在副屏上会被裁掉或撑大。
+    /// </summary>
+    public static Windows.Graphics.RectInt32 ComputeBottomRight(
+        Microsoft.UI.Windowing.AppWindow window,
+        int anchorX,
+        int anchorY,
+        int widthDip,
+        int heightDip,
+        int marginRightDip,
+        int marginBottomDip)
     {
-        var display = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(window.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
+        _ = window;
+
+        var display = Microsoft.UI.Windowing.DisplayArea.GetFromPoint(
+            new Windows.Graphics.PointInt32(anchorX, anchorY),
+            Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
+
         if (display is null) return new Windows.Graphics.RectInt32(0, 0, widthDip, heightDip);
 
+        return ComputeBottomRightFor(
+            display, widthDip, heightDip, marginRightDip, marginBottomDip);
+    }
+
+    private static Windows.Graphics.RectInt32 ComputeBottomRightFor(
+        Microsoft.UI.Windowing.DisplayArea display,
+        int widthDip,
+        int heightDip,
+        int marginRightDip,
+        int marginBottomDip)
+    {
         double scale = GetScale(display);
         var work = display.WorkArea;
 
@@ -334,6 +397,25 @@ internal static class DpiLayout
         int x = work.X + work.Width - w - mr;
         int y = work.Y + work.Height - h - mb;
         return new Windows.Graphics.RectInt32(x, y, w, h);
+    }
+
+    /// <summary>
+    /// 主显示器右下角落位。只用在"还没有锚点"的兜底路径上。
+    /// </summary>
+    public static Windows.Graphics.RectInt32 ComputeBottomRightOfPrimary(
+        Microsoft.UI.Windowing.AppWindow window,
+        int widthDip,
+        int heightDip,
+        int marginRightDip,
+        int marginBottomDip)
+    {
+        _ = window;
+
+        var display = Microsoft.UI.Windowing.DisplayArea.Primary;
+        if (display is null) return new Windows.Graphics.RectInt32(0, 0, widthDip, heightDip);
+
+        return ComputeBottomRightFor(
+            display, widthDip, heightDip, marginRightDip, marginBottomDip);
     }
 
     public static Windows.Graphics.RectInt32 ComputeBottomCenter(Microsoft.UI.Windowing.AppWindow window, int anchorX, int anchorY, int widthDip, int heightDip, int marginBottomDip)

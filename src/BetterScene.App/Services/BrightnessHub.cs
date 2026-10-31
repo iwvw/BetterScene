@@ -241,6 +241,56 @@ public static class BrightnessHub
 
     public static void Set(string id, int level, bool notify = true)
     {
+        SetCore(id, level, commit: true, notify);
+    }
+
+    /// <summary>
+    /// 只记录意图，<b>不写硬件</b>。
+    ///
+    /// 拖动滑块时用它：拖动过程中每帧都调，但只有最终值需要落到硬件。
+    /// 写硬件交给 <see cref="Commit"/>（拖动停止后调用一次）。
+    ///
+    /// 参考 PowerToys 的 <c>SliderCommitScheduler</c> 与 Twinkle Tray 的
+    /// <c>syncBrightness</c>：两者都不在拖动过程中写硬件。原因是
+    /// 一次 DDC 写入要 60ms、WMI 要 30ms，而拖动每秒产生 60 帧——
+    /// 每帧下发会把管道灌满，一台屏的洪水能把另一台堵住几秒。
+    /// </summary>
+    public static void SetIntent(string id, int level)
+    {
+        SetCore(id, level, commit: false, notify: false);
+    }
+
+    /// <summary>
+    /// 把已记录的意图值下发给硬件。
+    ///
+    /// 由 UI 在拖动结束后调用（debounce 触发），或由外部命令直接调用。
+    /// 幂等：硬件已经是这个值也无害。
+    /// </summary>
+    public static void Commit(string id)
+    {
+        DisplayTarget? target = Find(id);
+        if (target is null) return;
+
+        int requested = App.Settings.Brightness.TryGetValue(id, out int saved)
+            ? Math.Clamp(saved, 0, 100)
+            : Math.Clamp(target.Brightness, 0, 100);
+
+        Coalescer.SetTarget(id, ClampToChannel(target, requested));
+
+        Log.Debug($"brightness commit {id} = {requested}");
+    }
+
+    /// <summary>把所有已记录的意图值下发给硬件。</summary>
+    public static void CommitAll()
+    {
+        foreach (DisplayTarget target in Controllable)
+        {
+            Commit(target.Id);
+        }
+    }
+
+    private static void SetCore(string id, int level, bool commit, bool notify)
+    {
         DisplayTarget? target = Find(id);
         BrightnessRange range = target is null ? FullRange : RangeOf(target);
 
@@ -269,9 +319,13 @@ public static class BrightnessHub
             SettingsStore.SaveDeferred(App.Settings);
         }
 
-        Log.Debug($"brightness set {id} requested={requested} applied={applied} changed={changed} notify={notify}");
+        Log.Debug($"brightness set {id} requested={requested} applied={applied} " +
+                  $"changed={changed} notify={notify} commit={commit}");
 
-        Coalescer.SetTarget(id, applied);
+        if (commit)
+        {
+            Coalescer.SetTarget(id, applied);
+        }
 
         if (!notify) return;
 
@@ -351,6 +405,20 @@ public static class BrightnessHub
 
     public static bool ApplyAll(int level, bool notify = true)
     {
+        return ApplyAllCore(level, commit: true, notify);
+    }
+
+    /// <summary>
+    /// 只记录所有显示器的意图值，不写硬件。
+    /// 拖动组滑块时用它，写硬件交给 <see cref="CommitAll"/>。
+    /// </summary>
+    public static bool SetIntentAll(int level)
+    {
+        return ApplyAllCore(level, commit: false, notify: false);
+    }
+
+    private static bool ApplyAllCore(int level, bool commit, bool notify)
+    {
         List<DisplayTarget> targets = Controllable.ToList();
         if (targets.Count == 0) return false;
 
@@ -365,7 +433,8 @@ public static class BrightnessHub
         {
             int applied = ClampToChannel(target, requested);
             App.Settings.Brightness[target.Id] = requested;
-            Coalescer.SetTarget(target.Id, applied);
+
+            if (commit) Coalescer.SetTarget(target.Id, applied);
 
             if (target.IsPrimary) reference = applied;
         }
