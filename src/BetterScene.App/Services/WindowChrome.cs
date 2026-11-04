@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using BetterScene.Core;
 
 namespace BetterScene.App.Services;
 
@@ -17,6 +18,10 @@ internal static class WindowChrome
 
     private const uint WM_NCCALCSIZE = 0x0083;
     private const uint WM_DPICHANGED = 0x02E0;
+    private const uint WM_POWERBROADCAST = 0x0218;
+    private const uint PBT_APMSUSPEND = 0x0004;
+    private const uint PBT_APMRESUMEAUTOMATIC = 0x0012;
+    private const uint PBT_APMRESUMESUSPEND = 0x0007;
     private const uint LWA_ALPHA = 0x00000002;
     private const int MONITOR_DEFAULTTONEAREST = 2;
 
@@ -125,6 +130,19 @@ internal static class WindowChrome
     /// 改分辨率之后，显示器句柄可能被复用而矩形已经变了，
     /// 缓存就会永远返回错的那个任务栏，Z 序（压在任务栏下方）跟着错位。
     /// </summary>
+    static WindowChrome()
+    {
+        PowerSuspensionState.Resumed += ClearTaskbarCache;
+    }
+
+    public static void ClearTaskbarCache()
+    {
+        lock (TaskbarCache)
+        {
+            TaskbarCache.Clear();
+        }
+    }
+
     private static readonly Dictionary<IntPtr, (IntPtr Taskbar, RectNative Bounds)> TaskbarCache = new();
 
     private static IntPtr FindTaskbarForWindow(IntPtr hwnd)
@@ -229,8 +247,14 @@ internal static class WindowChrome
 
     public static void RemoveNonClientFrame(IntPtr hwnd)
     {
-        _subclassProc = SubclassProc;
+        _subclassProc ??= SubclassProc;
         _ = SetWindowSubclass(hwnd, _subclassProc, 1, IntPtr.Zero);
+    }
+
+    public static void TrackPowerAndDpi(IntPtr hwnd)
+    {
+        _subclassProc ??= SubclassProc;
+        _ = SetWindowSubclass(hwnd, _subclassProc, 2, IntPtr.Zero);
     }
 
     public static void BringToForeground(IntPtr hwnd)
@@ -264,6 +288,19 @@ internal static class WindowChrome
             IntPtr result = DefSubclassProc(hWnd, msg, wParam, lParam);
             DpiChanged?.Invoke(hWnd);
             return result;
+        }
+
+        if (msg == WM_POWERBROADCAST)
+        {
+            uint powerEvent = (uint)wParam.ToInt64();
+            if (powerEvent == PBT_APMSUSPEND)
+            {
+                PowerSuspensionState.NotifySuspend();
+            }
+            else if (powerEvent is PBT_APMRESUMEAUTOMATIC or PBT_APMRESUMESUSPEND)
+            {
+                PowerSuspensionState.NotifyResume();
+            }
         }
 
         return DefSubclassProc(hWnd, msg, wParam, lParam);

@@ -52,7 +52,11 @@ public partial class App : Application
     {
         InitializeComponent();
 
-        UnhandledException += (_, e) => Log.Error(e.Exception, "unhandled xaml exception");
+        UnhandledException += (_, e) =>
+        {
+            Log.Error(e.Exception, "unhandled xaml exception");
+            e.Handled = true;
+        };
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             Log.Error(e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()), "unhandled domain exception");
 

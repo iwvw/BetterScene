@@ -58,6 +58,12 @@ public sealed class AppSettings
     public bool AutoScene { get; set; }
 
     /// <summary>
+    /// 显示器卡片在 mini 面板中的稳定顺序（存 DisplayId）。
+    /// 无论多场景切换、显卡热插拔或重连，保持既定顺序不乱跳。
+    /// </summary>
+    public List<string> DisplayOrder { get; set; } = new();
+
+    /// <summary>
     /// 每台显示器在 mini 面板里要显示哪些控制项。
     ///
     /// 键是显示器 Id，值是控制项名称集合（VCP 名称，以及 HDR / 分辨率 /

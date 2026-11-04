@@ -256,6 +256,8 @@ public sealed class TrayIconService
         timer.IsRepeating = true;
         timer.Tick += (_, _) =>
         {
+            if (PowerSuspensionState.IsResuming) return;
+
             bool dark = ThemeSwitcher.IsTaskbarDark;
             if (_appliedDark == dark) return;
 
@@ -301,32 +303,47 @@ public sealed class TrayIconService
     }
 
     public void UpdateState(TrayState state, string text)
-    {        if (_icon is null) return;
+    {
+        if (_icon is null) return;
 
-        _icon.ToolTipText = $"{ProductInfo.DisplayName} · {text}";
-
-        if (_icon.ContextFlyout is not MenuFlyout menu) return;
-
-        if (FindItem<MenuFlyoutItem>(menu, "TrayStatusItem") is { } status)
+        try
         {
-            status.Text = $"状态：{text}";
-            if (status.Icon is FontIcon icon)
+            _icon.ToolTipText = $"{ProductInfo.DisplayName} · {text}";
+
+            if (_icon.ContextFlyout is not MenuFlyout menu) return;
+
+            if (FindItem<MenuFlyoutItem>(menu, "TrayStatusItem") is { } status)
             {
-                icon.Glyph = state switch
+                status.Text = $"状态：{text}";
+                if (status.Icon is FontIcon icon)
                 {
-                    TrayState.Ready => "\uE73E",
-                    TrayState.Busy => "\uE895",
-                    _ => "\uEA39",
-                };
+                    icon.Glyph = state switch
+                    {
+                        TrayState.Ready => "\uE73E",
+                        TrayState.Busy => "\uE895",
+                        _ => "\uEA39",
+                    };
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"update tray state failed: {ex.Message}");
         }
     }
 
     public void UpdateThemeChecks(SystemTheme theme)
     {
-        if (_icon?.ContextFlyout is not MenuFlyout menu) return;
-        if (FindItem<ToggleMenuFlyoutItem>(menu, "TrayLightItem") is { } light) light.IsChecked = theme == SystemTheme.Light;
-        if (FindItem<ToggleMenuFlyoutItem>(menu, "TrayDarkItem") is { } dark) dark.IsChecked = theme == SystemTheme.Dark;
+        try
+        {
+            if (_icon?.ContextFlyout is not MenuFlyout menu) return;
+            if (FindItem<ToggleMenuFlyoutItem>(menu, "TrayLightItem") is { } light) light.IsChecked = theme == SystemTheme.Light;
+            if (FindItem<ToggleMenuFlyoutItem>(menu, "TrayDarkItem") is { } dark) dark.IsChecked = theme == SystemTheme.Dark;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"update tray theme checks failed: {ex.Message}");
+        }
     }
 
     public TrayIconRect? TryTrayBounds()
@@ -447,8 +464,16 @@ public sealed class TrayIconService
             Wire<MenuFlyoutItem>(menu, "TrayToggleItem", () => ToggleSceneRequested?.Invoke());
         }
 
-        icon.ForceCreate(enablesEfficiencyMode: false);
-        _icon = icon;
+        try
+        {
+            icon.ForceCreate(enablesEfficiencyMode: false);
+            _icon = icon;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"tray icon force create failed: {ex.Message}");
+            return;
+        }
 
         // 创建之后按当前任务栏明暗落地一次图标，并订阅后续的主题广播。
         StartThemeSubscription();

@@ -519,6 +519,7 @@ public sealed partial class FlyoutWindow : Window
     public void WarmUp()
     {
         if (_windowShown || _closing) return;
+        if (PowerSuspensionState.IsResuming) return;
 
         _lastWarmMs = MonoClock.NowMs;
 
@@ -597,6 +598,7 @@ public sealed partial class FlyoutWindow : Window
     public void MaybeWarmUp()
     {
         if (_windowShown || _closing) return;
+        if (PowerSuspensionState.IsResuming) return;
         if (!Panel.HasDisplays) return;
 
         int count = Panel.DisplayCount;

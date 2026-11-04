@@ -48,6 +48,8 @@ public sealed partial class MainWindow : Window
         _hwnd = WindowNative.GetWindowHandle(this);
         _appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_hwnd));
 
+        WindowChrome.TrackPowerAndDpi(_hwnd);
+
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         _appWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
@@ -84,6 +86,8 @@ public sealed partial class MainWindow : Window
 
         // 先建好首屏，避免「最小化启动、之后才唤回窗口」时出现空白。
         LoadInitialPage();
+
+        PowerSuspensionState.Resumed += OnSystemResumed;
 
         // mini 面板也要提前建好并离屏渲染一次：它是懒创建的，
         // 不预热的话「第一次点击」必然要付创建 + 首帧的代价，
@@ -341,6 +345,12 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public void WarmUpFlyout()
     {
+        if (PowerSuspensionState.IsResuming)
+        {
+            Log.Debug("skip flyout warm up during power resume grace period");
+            return;
+        }
+
         // 没有显示器就别预热：此时的测量结果一定是错的。
         if (DisplayBus.Current.Count == 0) return;
 
@@ -350,6 +360,19 @@ public sealed partial class MainWindow : Window
         {
             if (_flyout is null || _flyout.IsVisible) return;
             _flyout.MaybeWarmUp();
+        });
+    }
+
+    private void OnSystemResumed()
+    {
+        // 系统唤醒后 3.5 秒（宽限期过后），再安全地为新拓扑执行一次预热
+        _ = Task.Delay(3500).ContinueWith(_ =>
+        {
+            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+            {
+                if (_flyout is null || _flyout.IsVisible) return;
+                WarmUpFlyout();
+            });
         });
     }
 
@@ -654,6 +677,7 @@ public sealed partial class MainWindow : Window
 
         // 退订主题事件：它是静态事件，会持有这个窗口类型。
         // 进程马上就退出了，影响有限，但订阅-退订成对是基本纪律。
+        PowerSuspensionState.Resumed -= OnSystemResumed;
         ThemeSwitcher.Settled -= OnThemeSettled;
         _themeTrimHooked = false;
 

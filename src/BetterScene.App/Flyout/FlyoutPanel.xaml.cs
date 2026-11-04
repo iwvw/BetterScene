@@ -530,18 +530,15 @@ public sealed partial class FlyoutPanel : UserControl
 
         if (!Displays.Contains(_group)) Displays.Insert(0, _group);
 
-        for (int i = 0; i < DisplayBus.Current.Count; i++)
+        List<DisplayTarget> ordered = DisplayOrdering.Order(
+            DisplayBus.Current, App.Settings.DisplayOrder, out bool orderChanged);
+
+        if (orderChanged)
         {
-            DisplayTarget target = DisplayBus.Current[i];
-            if (!_items.TryGetValue(target.Id, out DisplaySliderItem? item)) continue;
-
-            item.IsCollapsed = linked;
-
-            int index = Displays.IndexOf(item);
-            if (index < 0) Displays.Add(item);
+            SettingsStore.SaveDeferred(App.Settings);
         }
 
-        // 拔掉的显示器从列表移除（这是真的没了，不是折叠）。
+        // 拔掉的显示器先从列表移除。
         for (int i = Displays.Count - 1; i >= 0; i--)
         {
             DisplaySliderItem item = Displays[i];
@@ -549,6 +546,34 @@ public sealed partial class FlyoutPanel : UserControl
             if (_items.ContainsKey(item.Id)) continue;
 
             Displays.RemoveAt(i);
+        }
+
+        // 按已记住的稳定顺序同步到 Displays（索引 0 是 _group，单屏从 1 开始）。
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            DisplayTarget target = ordered[i];
+            if (!_items.TryGetValue(target.Id, out DisplaySliderItem? item)) continue;
+
+            item.IsCollapsed = linked;
+
+            int targetIndex = i + 1;
+            int currentIndex = Displays.IndexOf(item);
+
+            if (currentIndex < 0)
+            {
+                if (targetIndex >= Displays.Count)
+                {
+                    Displays.Add(item);
+                }
+                else
+                {
+                    Displays.Insert(targetIndex, item);
+                }
+            }
+            else if (currentIndex != targetIndex && targetIndex < Displays.Count)
+            {
+                Displays.Move(currentIndex, targetIndex);
+            }
         }
     }
 
