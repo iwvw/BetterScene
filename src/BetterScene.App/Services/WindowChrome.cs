@@ -33,6 +33,7 @@ internal static class WindowChrome
     private const uint SWP_NOSENDCHANGING = 0x0400;
 
     private static SUBCLASSPROC? _subclassProc;
+    private static SUBCLASSPROC? _powerSubclassProc;
 
     public static void SetToolWindow(IntPtr hwnd)
     {
@@ -251,10 +252,18 @@ internal static class WindowChrome
         _ = SetWindowSubclass(hwnd, _subclassProc, 1, IntPtr.Zero);
     }
 
+    /// <summary>
+    /// 只订阅电源与 DPI 通知，<b>不</b>改动窗口的非客户区。
+    ///
+    /// 必须和 <see cref="RemoveNonClientFrame"/> 用不同的子类过程：
+    /// 那个过程会把 WM_NCCALCSIZE 直接返回 0，等于抹掉整个标题栏区域。
+    /// 主窗口一旦共享它，DWM 就不再按圆形区域裁剪，圆角消失；
+    /// 拖拽区、最小化动画的命中区域也会跟着变形。
+    /// </summary>
     public static void TrackPowerAndDpi(IntPtr hwnd)
     {
-        _subclassProc ??= SubclassProc;
-        _ = SetWindowSubclass(hwnd, _subclassProc, 2, IntPtr.Zero);
+        _powerSubclassProc ??= PowerSubclassProc;
+        _ = SetWindowSubclass(hwnd, _powerSubclassProc, 2, IntPtr.Zero);
     }
 
     public static void BringToForeground(IntPtr hwnd)
@@ -281,13 +290,36 @@ internal static class WindowChrome
     {
         if (msg == WM_NCCALCSIZE && wParam != IntPtr.Zero) return IntPtr.Zero;
 
+        if (HandleCommon(hWnd, msg, wParam, lParam, out IntPtr result)) return result;
+
+        return DefSubclassProc(hWnd, msg, wParam, lParam);
+    }
+
+    /// <summary>
+    /// 主窗口用的子类过程：只处理电源与 DPI，非客户区交还给默认实现。
+    ///
+    /// 主窗口保持系统原生的非客户区，DWM 才能继续画圆角、
+    /// 也才能保留系统提供的拖拽与最小化动画。
+    /// </summary>
+    private static IntPtr PowerSubclassProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint id, IntPtr data)
+    {
+        if (HandleCommon(hWnd, msg, wParam, lParam, out IntPtr result)) return result;
+
+        return DefSubclassProc(hWnd, msg, wParam, lParam);
+    }
+
+    /// <summary>两个子类过程共用的通知处理。返回 true 表示已经给出结果。</summary>
+    private static bool HandleCommon(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, out IntPtr result)
+    {
+        result = IntPtr.Zero;
+
         if (msg == WM_DPICHANGED)
         {
             // 先让默认处理跑完（WinUI 内部要据此重算 XAML 的缩放），
             // 再通知宿主按新 DPI 重新落位。
-            IntPtr result = DefSubclassProc(hWnd, msg, wParam, lParam);
+            result = DefSubclassProc(hWnd, msg, wParam, lParam);
             DpiChanged?.Invoke(hWnd);
-            return result;
+            return true;
         }
 
         if (msg == WM_POWERBROADCAST)
@@ -303,7 +335,7 @@ internal static class WindowChrome
             }
         }
 
-        return DefSubclassProc(hWnd, msg, wParam, lParam);
+        return false;
     }
 
     private delegate IntPtr SUBCLASSPROC(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint id, IntPtr data);

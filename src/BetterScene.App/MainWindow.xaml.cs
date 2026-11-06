@@ -52,7 +52,13 @@ public sealed partial class MainWindow : Window
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
-        _appWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+
+        // 不要用 Tall：那会让系统把三个控制按钮拉满整个 48px 标题栏，
+        // 视觉上又高又挤，和标题、图标不在同一重心上。
+        // 用标准高度，按钮就是常规尺寸，垂直居中在标题栏里。
+        _appWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
+
+        AppTitleBar.SizeChanged += (_, _) => UpdateTitleBarPadding();
 
         if (_appWindow.Presenter is OverlappedPresenter presenter)
         {
@@ -101,6 +107,7 @@ public sealed partial class MainWindow : Window
     private void OnActivated(object sender, WindowActivatedEventArgs args)
     {
         LoadInitialPage();
+        UpdateTitleBarPadding();
 
         // 用户回到窗口，刷新活跃时间戳，避免这时被回收工作集造成卡顿。
         MemoryTrimmer.Touch(ActivitySources.MainWindow);
@@ -116,6 +123,32 @@ public sealed partial class MainWindow : Window
     }
 
     private bool _windowIconSettled;
+
+    /// <summary>
+    /// 给系统控制按钮留出右侧空间。
+    ///
+    /// 标题栏是自定义的，但最小化/最大化/关闭三个按钮仍由系统绘制覆盖在
+    /// 客户区右上角。不预留这段宽度，标题栏里的内容（更新按钮等）会被压在
+    /// 按钮下面，既看不到也点不到。
+    ///
+    /// <c>RightInset</c> 是物理像素，要按当前缩放换算回 DIP 才和 XAML 对得上。
+    /// </summary>
+    private void UpdateTitleBarPadding()
+    {
+        if (_appWindow is null || RightPaddingColumn is null) return;
+
+        try
+        {
+            double scale = AppTitleBar.XamlRoot?.RasterizationScale ?? 1.0;
+            if (scale <= 0) scale = 1.0;
+
+            RightPaddingColumn.Width = new GridLength(_appWindow.TitleBar.RightInset / scale);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"update title bar padding failed: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// 首次导航。幂等：只在第一次真正执行。
