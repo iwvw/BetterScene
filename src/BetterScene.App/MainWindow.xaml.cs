@@ -26,6 +26,15 @@ public sealed partial class MainWindow : Window
     private bool _forceExit;
     private bool _initialPageLoaded;
 
+    /// <summary>
+    /// 主窗口隐藏到托盘时记录当前页面类型，显示时据此恢复。
+    /// 跨「收起-呼出」循环保留，恢复的是用户离开前的那一页。
+    /// </summary>
+    private Type? _lastPageType;
+
+    /// <summary>主窗口是否曾经显示过。静默启动的页面释放据此做竞态保护。</summary>
+    private bool _everShown;
+
     /// <summary>最近一次检查到的更新；标题栏按钮和点击更新都用它。</summary>
     private BetterScene.Core.UpdateInfo _pendingUpdate;
     /// <summary>
@@ -212,6 +221,10 @@ public sealed partial class MainWindow : Window
         // 窗口要开始渲染了，先登记活动来源，
         // 否则空闲看门狗可能在用户刚点开的瞬间清工作集，造成首帧卡顿。
         MemoryTrimmer.BeginActivity(ActivitySources.MainWindow);
+        _everShown = true;
+
+        // 收起过则页面树已被释放，先按上次类型重建页面。
+        EnsureInitialPageLoaded();
 
         _appWindow?.Show();
         Activate();
@@ -655,6 +668,84 @@ public sealed partial class MainWindow : Window
         // 后者会跑一个 300ms 的滑入动画，期间页面还要完成首次布局，
         // 在概览页这种要建多张 SettingsExpander 的页面上会明显卡顿。
         NavFrame.Navigate(pageType, null, new SuppressNavigationTransitionInfo());
+
+        // 界面上没有后退按钮，但 Frame 默认会把每次访问过的页面压入 BackStack
+        // 强引用着。切页几次就积压几份页面实例（含整棵可视化树），
+        // 主窗口隐藏时这些都无法回收，是常驻内存的一大来源。
+        // 这里立刻清掉，只保留正在显示的页。
+        NavFrame.BackStack.Clear();
+        NavFrame.ForwardStack.Clear();
+    }
+
+    /// <summary>
+    /// 释放当前页面可视化树（主窗口隐藏到托盘时调用）。
+    ///
+    /// 直接给 <see cref="NavFrame"/> 的 Content 置 null 不会触发导航流程，
+    /// 因此页面的 <c>OnNavigatedFrom</c> 不会执行。必须显式通知实现了
+    /// <see cref="Pages.IPageLifecycle"/> 的页面退订全局事件，否则它
+    /// 在隐藏后仍会收到 DisplayBus / BrightnessHub / AutoScene 的刷新，
+    /// 白耗 CPU，也会被这些强引用钉住而无法回收。
+    ///
+    /// 之后由隐藏在 1.2 秒后的 <c>CompactAndTrim</c> 做真正的阻塞式 GC。
+    /// </summary>
+    private void ReleasePageContent()
+    {
+        try
+        {
+            if (NavFrame.Content is not null)
+            {
+                _lastPageType = NavFrame.Content.GetType();
+
+                if (NavFrame.Content is Pages.IPageLifecycle lifecycle)
+                {
+                    try { lifecycle.DetachFromHost(); }
+                    catch (Exception ex) { Log.Warn($"page detach failed: {ex.Message}"); }
+                }
+            }
+
+            NavFrame.Content = null;
+            NavFrame.BackStack.Clear();
+            NavFrame.ForwardStack.Clear();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"release page content failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 显示主窗口时恢复页面：已释放则按上次的页面类型重建，否则不动。
+    /// 与 <see cref="LoadInitialPage"/> 分工：前者幂等只管首次首页，
+    /// 这里专门处理「收起后重新呼出」的页面恢复。
+    /// </summary>
+    private void EnsureInitialPageLoaded()
+    {
+        if (NavFrame.Content is not null) return;
+        _lastPageType ??= typeof(OverviewPage);
+        Navigate(_lastPageType);
+    }
+
+    /// <summary>
+    /// 静默启动（启动即最小化到托盘、从不显示主窗口）时释放页面树，把驻留内存降下来。
+    ///
+    /// 带竞态保护：若延迟期间用户已把主窗口显示出来（点了托盘，<c>Visible</c> 为真），
+    /// 则不动，避免抽走正在渲染的页面；否则释放页面，用户稍后点开时走
+    /// <see cref="EnsureInitialPageLoaded"/> 恢复。
+    /// </summary>
+    public void ReleasePageForTrayStart()
+    {
+        // 竞态保护：若延迟期间窗口已被显示（用户点了托盘打开主窗口），
+        // 说明页面正在被渲染/使用，不能抽走；否则释放页面，之后点开时经
+        // EnsureInitialPageLoaded 恢复。
+        if (_everShown) return;
+        if (NavFrame.Content is null) return;
+
+        ReleasePageContent();
+        _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
+        {
+            await Task.Delay(1200);
+            MemoryTrimmer.CompactAndTrim("tray start");
+        });
     }
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -680,19 +771,26 @@ public sealed partial class MainWindow : Window
 
         // 窗口隐藏后界面不再渲染，是回收工作集的最佳时机。
         //
-        // 这里刻意走立即回收（force），不排队也不看内存压力：
+        // 这里刻意走立即回收（force + 先压缩托管堆），不排队也不看内存压力：
         // 主窗口隐藏意味着用户已经把它收进托盘、较长一段时间不会再看，
         // 那批交换链、字形位图、着色器缓存确实用不上了。
+        // CompactAndTrim 会先 GC.Collect 把托管堆压紧、再把工作集换出，
+        // 任务管理器的数字才能真掉到十几 MB。
         // 与迷你面板不同——面板收起往往只是临时瞄一眼，几秒后又要打开，
         // 立刻交还反而让下次展开重新缺页。
         //
         // 稍等一拍再修剪：Hide() 之后 XAML 还要跑完收起动画、释放交换链，
         // 立刻清工作集会和那批释放操作抢同一批页。
         MemoryTrimmer.EndActivity(ActivitySources.MainWindow);
+
+        // 隐藏时释放页面可视化树：退订全局事件、置空 Content，让渲染原生资源
+        // 与积压在 BackStack 里的历史页都能离开；随后的 CompactAndTrim 再压实。
+        ReleasePageContent();
+
         _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
         {
             await Task.Delay(1200);
-            MemoryTrimmer.TryTrim("window hidden", force: true);
+            MemoryTrimmer.CompactAndTrim("window hidden");
         });
     }
 

@@ -80,6 +80,12 @@ public partial class App : Application
             // 不 Activate：主窗口保持隐藏，只驻留托盘。
             // 托盘图标在 MainWindow 构造里已创建，用户仍能叫回窗口。
             Log.Info("starting minimized to tray");
+
+            // 主窗口构造时已导航首页，页面树占着内存。静默启动=常驻托盘，
+            // 等初始化稳定后释放页面树，把驻留内存降下来；
+            // 用户点开后由 ShowAndActivate 里的 EnsureInitialPageLoaded 恢复。
+            // 竞态保护在 ReleasePageForTrayStart 内部：窗口被显示出来就不会释放。
+            UiQueue.TryEnqueue(DispatcherQueuePriority.Low, () => Main?.ReleasePageForTrayStart());
         }
         else
         {

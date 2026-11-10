@@ -11,7 +11,7 @@ using Microsoft.UI.Xaml.Navigation;
 
 namespace BetterScene.App.Pages;
 
-public sealed partial class DisplaysPage : Page
+public sealed partial class DisplaysPage : Page, IPageLifecycle
 {
     private readonly Dictionary<string, DisplaySliderItem> _items = new(StringComparer.OrdinalIgnoreCase);
 
@@ -36,6 +36,27 @@ public sealed partial class DisplaysPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        Attach();
+        Rebuild(DisplayBus.Current);
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        Detach();
+        base.OnNavigatedFrom(e);
+    }
+
+    /// <inheritdoc />
+    public void DetachFromHost() => Detach();
+
+    private bool _attached;
+
+    /// <summary>订阅全局事件。幂等：<see cref="OnNavigatedTo"/> 与恢复导航都可能进入。</summary>
+    private void Attach()
+    {
+        if (_attached) return;
+        _attached = true;
+
         DisplayBus.Changed += OnDisplaysChanged;
 
         // 能力探测与控制项读取都是异步回来的。
@@ -45,12 +66,14 @@ public sealed partial class DisplaysPage : Page
             service.ControlsRead += OnControlsRead;
             service.ControlWritten += OnControlWritten;
         }
-
-        Rebuild(DisplayBus.Current);
     }
 
-    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    /// <summary>退订全局事件。幂等：<see cref="OnNavigatedFrom"/> 与 <see cref="DetachFromHost"/> 都可能进入。</summary>
+    private void Detach()
     {
+        if (!_attached) return;
+        _attached = false;
+
         DisplayBus.Changed -= OnDisplaysChanged;
 
         if (DisplayBus.Service is { } service)
@@ -63,8 +86,6 @@ public sealed partial class DisplaysPage : Page
         _probeDialog = null;
         _probePanel = null;
         _probeDisplayId = null;
-
-        base.OnNavigatedFrom(e);
     }
 
     private void OnDisplaysChanged()

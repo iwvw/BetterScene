@@ -13,7 +13,7 @@ namespace BetterScene.App.Pages;
 ///
 /// 这两件事本来就是同一个决策的两个环节，拆成两页反而要来回跳。
 /// </summary>
-public sealed partial class AutoSwitchPage : Page
+public sealed partial class AutoSwitchPage : Page, IPageLifecycle
 {
     private readonly List<SceneRuleItem> _ruleItems = new();
     private bool _syncing;
@@ -31,6 +31,12 @@ public sealed partial class AutoSwitchPage : Page
         {
             if (App.AutoScene is not null) App.AutoScene.StateChanged -= OnServiceStateChanged;
         };
+    }
+
+    /// <inheritdoc />
+    public void DetachFromHost()
+    {
+        if (App.AutoScene is not null) App.AutoScene.StateChanged -= OnServiceStateChanged;
     }
 
     private void Load()

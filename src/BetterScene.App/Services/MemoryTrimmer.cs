@@ -206,6 +206,38 @@ public static class MemoryTrimmer
         return ok;
     }
 
+    /// <summary>
+    /// 先把托管堆压紧（真正的阻塞式 GC），再把工作集交还系统。
+    ///
+    /// 只调 <see cref="EmptyWorkingSet"/> 不会压缩托管堆：已经死掉的 gen2
+    /// 对象所占的页仍留在进程地址空间里，会被重新读入工作集——
+    /// 任务管理器里那十几兆「看着没掉下去」的数字往往就是它们。
+    /// 先跑一次真正的阻塞式回收，把这些页还出去，数字才算真掉下来。
+    ///
+    /// 阻塞式回收会有几十毫秒停顿，所以只能在确定没有渲染活动时调用
+    /// （<see cref="IsUiActive"/> 为假）。适合主窗口隐藏这种「用户明确
+    /// 不再看界面」的时机；之后仍由 <see cref="MemoryPressure"/> 决定
+    /// 是否再兜底，不反复清。
+    /// </summary>
+    public static void CompactAndTrim(string reason)
+    {
+        if (IsUiActive) return;
+
+        try
+        {
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"gc compact failed: {ex.Message}");
+        }
+
+        TryTrim(reason, force: true);
+    }
+
     private static readonly object ScheduleGate = new();
     private static Timer? _deferredTrim;
 

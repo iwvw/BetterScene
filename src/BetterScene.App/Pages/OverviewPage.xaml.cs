@@ -12,7 +12,7 @@ namespace BetterScene.App.Pages;
 /// 概览页：只放「现在是什么状态」和「快速调亮度」。
 /// 显示器细节去「显示器」页，场景配置去「场景」页。
 /// </summary>
-public sealed partial class OverviewPage : Page
+public sealed partial class OverviewPage : Page, IPageLifecycle
 {
     private readonly Dictionary<string, DisplaySliderItem> _items = new(StringComparer.OrdinalIgnoreCase);
 
@@ -35,26 +35,46 @@ public sealed partial class OverviewPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
-
-        DisplayBus.Changed += OnDisplaysChanged;
-        BrightnessHub.Changed += OnBrightnessChanged;
-
-        if (App.AutoScene is not null) App.AutoScene.StateChanged += OnAutoSceneStateChanged;
-        if (DisplayBus.Service is { } service) service.ControlsRead += OnControlsRead;
-
+        Attach();
         Refresh();
         RequestExtras();
     }
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
+        Detach();
+        base.OnNavigatedFrom(e);
+    }
+
+    /// <inheritdoc />
+    public void DetachFromHost() => Detach();
+
+    private bool _attached;
+
+    /// <summary>订阅全局事件。幂等：<see cref="OnNavigatedTo"/> 与恢复导航都可能进入。</summary>
+    private void Attach()
+    {
+        if (_attached) return;
+        _attached = true;
+
+        DisplayBus.Changed += OnDisplaysChanged;
+        BrightnessHub.Changed += OnBrightnessChanged;
+
+        if (App.AutoScene is not null) App.AutoScene.StateChanged += OnAutoSceneStateChanged;
+        if (DisplayBus.Service is { } service) service.ControlsRead += OnControlsRead;
+    }
+
+    /// <summary>退订全局事件。幂等：<see cref="OnNavigatedFrom"/> 与 <see cref="DetachFromHost"/> 都可能进入。</summary>
+    private void Detach()
+    {
+        if (!_attached) return;
+        _attached = false;
+
         DisplayBus.Changed -= OnDisplaysChanged;
         BrightnessHub.Changed -= OnBrightnessChanged;
 
         if (App.AutoScene is not null) App.AutoScene.StateChanged -= OnAutoSceneStateChanged;
         if (DisplayBus.Service is { } service) service.ControlsRead -= OnControlsRead;
-
-        base.OnNavigatedFrom(e);
     }
 
     /// <summary>为还没有扩展项数据的显示器请求一次（对比度/音量/色温…）。</summary>
