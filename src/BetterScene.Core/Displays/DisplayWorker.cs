@@ -199,7 +199,7 @@ public sealed class DisplayWorker
             else
             {
                 _session.Release(match);
-                if (DdcOperations.Probe(item.Monitor))
+                if (ProbeWithRetry(item.Monitor))
                 {
                     _session.Adopt(match, item.Monitor);
                     target.Backend = DisplayBackend.Ddc;
@@ -226,6 +226,7 @@ public sealed class DisplayWorker
         }
 
         ApplyFallbacks(fresh, skipDdc);
+        ClearLeftoverSoftwareDimming(fresh.Values);
 
         lock (_gate)
         {
@@ -260,15 +261,6 @@ public sealed class DisplayWorker
                 WmiBrightness.TryGet(out int level);
                 target.Brightness = level;
                 target.Maximum = 100;
-
-                // 旧版本在 HDR 下把所有屏都切到 gamma 调光，包括这块 WMI 内屏。
-                // 于是背光被 WMI 正常调、图像又被 gamma 压暗，亮度整体偏低。
-                // 现在这类屏改回纯背光控制，残留的软件调光曲线必须清掉。
-                if (GammaBrightness.IsSoftwareDimmed(target.GdiName))
-                {
-                    GammaBrightness.Restore(target.GdiName);
-                    Log.Info($"cleared leftover software dimming on {target.FirmwareId}");
-                }
             }
             else
             {
@@ -278,6 +270,50 @@ public sealed class DisplayWorker
                 target.Brightness = GammaBrightness.ReadLevel(target.GdiName);
                 target.Maximum = 100;
             }
+        }
+    }
+
+    /// <summary>
+    /// 探测 DDC 是否可用,失败重试几次。
+    ///
+    /// 刚插上或刚唤醒时 DDC 总线常常还没就绪,单次失败就降级成 gamma,
+    /// 会把亮度写进软件调光曲线(见 <see cref="ClearLeftoverSoftwareDimming"/>)。
+    /// 这里多给几次机会,尽量在真正降级前等显示器醒过来。
+    /// </summary>
+    private static bool ProbeWithRetry(IntPtr handle, int attempts = 3)
+    {
+        for (int attempt = 0; attempt < attempts; attempt++)
+        {
+            if (attempt > 0) Thread.Sleep(120 * attempt);
+            if (DdcOperations.Probe(handle)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 清掉硬件背光屏上残留的软件调光曲线。
+    ///
+    /// gamma 曲线只在两类情况会被写:没有任何背光通道时的兜底,以及 HDR 下的调光。
+    /// 这两条之外的场景(尤其是 DDC 屏被短暂判成 gamma、亮度被写进曲线之后)
+    /// 如果不清,HDR 关着也会一直偏暗。清之前必须确认当前不是 HDR,
+    /// 否则会把 HDR 下的正常调光抹平。
+    /// </summary>
+    private void ClearLeftoverSoftwareDimming(IEnumerable<DisplayTarget> targets)
+    {
+        foreach (DisplayTarget target in targets)
+        {
+            if (target.Backend is not (DisplayBackend.Ddc or DisplayBackend.Wmi)) continue;
+
+            // WMI 内屏任何时候都不走 gamma,残留一律清掉。
+            // DDC 外接屏只在 HDR 未开启时清:HDR 下 gamma 是正常的调光通道,
+            // 清掉会把用户调的亮度抹平。判不出来的时候按未开启处理。
+            if (target.Backend == DisplayBackend.Ddc && HdrControl.Read(target).IsEnabled) continue;
+
+            if (!GammaBrightness.IsSoftwareDimmed(target.GdiName)) continue;
+
+            GammaBrightness.Restore(target.GdiName);
+            Log.Info($"cleared leftover software dimming on {target.FirmwareId} (backend={target.Backend})");
         }
     }
 
