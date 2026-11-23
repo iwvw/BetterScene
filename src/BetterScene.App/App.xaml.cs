@@ -423,26 +423,50 @@ public partial class App : Application
             Log.Warn($"stop activation server failed: {ex.Message}");
         }
 
-        BrightnessHub.Changed -= OnBrightnessChanged;
-        Wheel?.Dispose();
-        Wheel = null;
-        Hotkeys?.Dispose();
-        Hotkeys = null;
-        ThemeWatch?.Dispose();
-        ThemeWatch = null;
-        AutoScene?.Dispose();
-        AutoScene = null;
-        Updates?.Dispose();
-        Updates = null;
-        Osd?.DisposeWindow();
-        Osd = null;
+        // 各服务清理:任何一步失败都不能阻断后续清理。
+        try
+        {
+            BrightnessHub.Changed -= OnBrightnessChanged;
+            Wheel?.Dispose();
+            Wheel = null;
+            Hotkeys?.Dispose();
+            Hotkeys = null;
+            ThemeWatch?.Dispose();
+            ThemeWatch = null;
+            AutoScene?.Dispose();
+            AutoScene = null;
+            Updates?.Dispose();
+            Updates = null;
+            Osd?.DisposeWindow();
+            Osd = null;
+            _memoryWatchdog?.Dispose();
+            _memoryWatchdog = null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"shutdown services failed: {ex.Message}");
+        }
 
-        DisplayBus.Detach();
-        Displays?.Dispose();
+        // 显示器管道与后台进程最后处理,且必须执行到:否则会留下孤儿进程。
+        try
+        {
+            DisplayBus.Detach();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"detach display bus failed: {ex.Message}");
+        }
+
+        try
+        {
+            Displays?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"stop displays failed: {ex.Message}");
+        }
+
         Displays = null;
-
-        _memoryWatchdog?.Dispose();
-        _memoryWatchdog = null;
     }
 
     private void ShowFromOtherProcess()

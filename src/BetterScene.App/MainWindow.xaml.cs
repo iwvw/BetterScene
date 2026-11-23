@@ -814,29 +814,37 @@ public sealed partial class MainWindow : Window
     {
         _forceExit = true;
 
-        // 退订主题事件：它是静态事件，会持有这个窗口类型。
-        // 进程马上就退出了，影响有限，但订阅-退订成对是基本纪律。
-        PowerSuspensionState.Resumed -= OnSystemResumed;
-        ThemeSwitcher.Settled -= OnThemeSettled;
-        _themeTrimHooked = false;
+        try
+        {
+            PowerSuspensionState.Resumed -= OnSystemResumed;
+            ThemeSwitcher.Settled -= OnThemeSettled;
+            _themeTrimHooked = false;
 
-        // 先摘掉托盘图标，避免退出过程中残留一个点不动的图标。
-        _tray.Dispose();
-        _tray.Show(false);
+            _tray.Dispose();
+            _tray.Show(false);
 
-        _flyout?.CloseFlyout();
-        _flyout = null;
+            _flyout?.CloseFlyout();
+            _flyout = null;
 
-        // 清理托管的资源（快捷键、钩子、显示器管道等）。
-        App.Current.Shutdown();
+            App.Current.Shutdown();
 
-        _appWindow?.Destroy();
+            _appWindow?.Destroy();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "exit cleanup failed");
+        }
+        finally
+        {
+            // 无论清理过程中哪一步出错,都必须确保后台显示器进程被回收并真正结束进程,
+            // 否则会出现「托盘没了、窗口关了,但进程树还在后台跑」。
+            try { App.Displays?.Dispose(); } catch { }
 
-        // 最后真正退出消息循环。
-        // 用 Environment.Exit 而不是 Application.Exit：
-        // 后者要等 UI 线程把消息队列排空，而 DDC 相关的后台线程
-        // 可能还有未完成的写入，会导致进程迟迟不退。
-        Environment.Exit(0);
+            // 用 Environment.Exit 而不是 Application.Exit:
+            // 后者要等 UI 线程把消息队列排空,而 DDC 相关的后台线程
+            // 可能还有未完成的写入,会导致进程迟迟不退。
+            Environment.Exit(0);
+        }
     }
 
     private void Dispatch(Action action)

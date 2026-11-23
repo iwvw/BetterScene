@@ -391,27 +391,28 @@ public sealed class DisplayService : IDisposable
         _watchdog?.Dispose();
         _watchdog = null;
 
-        try
-        {
-            _writer?.WriteLine("{\"type\":\"quit\"}");
-            _client?.Dispose();
-        }
-        catch
-        {
-        }
+        // 先断开管道:worker 的 ReadLine 会立刻返回 null 并自行清理退出。
+        // 比写 "quit" 更可靠——写管道在极端情况下(缓冲区满)可能阻塞,反而卡住退出。
+        try { _client?.Dispose(); } catch { }
+        _client = null;
+        _writer = null;
 
+        // 兜底:等一会儿还不退就强杀整棵进程树,避免留下孤儿的显示器进程。
         try
         {
-            if (_process is { HasExited: false } process && !process.WaitForExit(800))
+            if (_process is { HasExited: false } process && !process.WaitForExit(1500))
             {
+                Log.Warn("displays worker did not exit, killing process tree");
                 process.Kill(entireProcessTree: true);
+                process.WaitForExit(1000);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warn($"kill displays worker failed: {ex.Message}");
         }
 
-        _process?.Dispose();
+        try { _process?.Dispose(); } catch { }
         _process = null;
     }
 }
