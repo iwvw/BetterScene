@@ -84,7 +84,9 @@ public static class DdcErrorClassifier
         DdcFailure.I2cReceive or
         DdcFailure.InvalidData or
         DdcFailure.InvalidTimingStatus or
-        DdcFailure.InvalidChecksum;
+        DdcFailure.InvalidChecksum or
+        DdcFailure.InvalidCommand or
+        DdcFailure.InvalidLength;
 
     public static bool IsFatal(DdcFailure failure) => failure is
         DdcFailure.I2cNotSupported or

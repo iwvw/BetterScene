@@ -33,7 +33,16 @@ public static class SliderWheel
         if (delta == 0) return;
 
         double next = slider.Value + (delta > 0 ? step : -step);
-        slider.Value = Math.Clamp(next, slider.Minimum, slider.Maximum);
+        double clamped = Math.Clamp(next, slider.Minimum, slider.Maximum);
+
+        if (clamped == slider.Value)
+        {
+            // 已在边界且值未变:同值赋值不产生变更通知,TwoWay 绑定不会回写,
+            // 「值没变也要排程提交」的兜底就执行不到。先反向微调再回位,强制一次通知。
+            slider.Value = clamped + (delta > 0 ? -0.5 : 0.5);
+        }
+
+        slider.Value = clamped;
         e.Handled = true;
     }
 }

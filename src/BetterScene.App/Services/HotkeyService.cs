@@ -26,6 +26,8 @@ public sealed class HotkeyService : IDisposable
     private int _nextId = 1;
     private bool _disposed;
 
+    private readonly SynchronizationContext? _context = SynchronizationContext.Current;
+
     public HotkeyService()
     {
         _wndProc = WndProc;
@@ -133,6 +135,14 @@ public sealed class HotkeyService : IDisposable
 
     private void Invoke(Action callback)
     {
+        // 统一在创建窗口的线程(UI)上执行:首次触发在消息线程,
+        // 而长按重复在计时器线程,不归位会让回调里的共享状态跨线程竞态。
+        if (_context is not null && SynchronizationContext.Current != _context)
+        {
+            _context.Post(_ => Invoke(callback), null);
+            return;
+        }
+
         try
         {
             callback();
@@ -169,16 +179,20 @@ public sealed class HotkeyService : IDisposable
 
         public void Press(uint vk)
         {
+            int generation;
             lock (_sync)
             {
                 _pressedAtMs = MonoClock.NowMs;
                 _vk = vk;
                 _generation++;
-                int generation = _generation;
+                generation = _generation;
 
-                _dispatch(_callback);
                 ScheduleLocked(generation, InitialDelayMs);
             }
+
+            // 回调移出锁外:回调内可能再调用 Register/Unregister(拿 _gate),
+            // 在锁内调用会构成锁序反转的死锁风险。
+            _dispatch(_callback);
         }
 
         private void ScheduleLocked(int generation, int delayMs)
@@ -189,6 +203,7 @@ public sealed class HotkeyService : IDisposable
 
         private void OnTick(int generation)
         {
+            bool fire = false;
             lock (_sync)
             {
                 if (generation != _generation) return;
@@ -204,9 +219,12 @@ public sealed class HotkeyService : IDisposable
                     return;
                 }
 
-                _dispatch(_callback);
                 ScheduleLocked(generation, RepeatIntervalMs);
+                fire = true;
             }
+
+            // 与 Press 一致:回调不持锁执行,避免锁序反转。
+            if (fire) _dispatch(_callback);
         }
 
         private static bool IsKeyDown(uint vk)

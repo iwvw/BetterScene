@@ -126,15 +126,18 @@ public static class GammaBrightness
         return false;
     }
 
-    public static void Restore(string gdiName)
+    public static bool Restore(string gdiName)
     {
-        _ = TrySet(gdiName, 100, out _);
+        bool ok = TrySet(gdiName, 100, out string? error);
+        if (!ok) Log.Warn($"gamma restore for {gdiName} failed: {error}");
 
         // 恢复到原样后基准缓存失效：下次写入要重新记录。
         lock (BaseGate)
         {
             BaseRamps.Remove(gdiName);
         }
+
+        return ok;
     }
 
     /// <summary>
@@ -278,6 +281,14 @@ public static class GammaBrightness
         double peak = top / 65535.0 * 100.0;
         if (peak >= 100.0 - 0.5) return ramp;
 
+        // 只有形状确实是纯缩放才反解,否则会把驱动/校色软件写入的真实曲线
+        // 误抬高并污染后续所有基准。形状不符时原样返回(作为基准),并记一条日志便于排查。
+        if (!LooksLikePureScale(ramp, top))
+        {
+            Log.Debug("gamma: current ramp is not a pure scale of identity, using as-is as base");
+            return ramp;
+        }
+
         // 纯缩放实现下，反解就是除掉缩放系数：
         //   applied = base × scale  =>  base = applied / scale
         // 不能再套指数公式，否则会把驱动或校色软件写入的真实曲线
@@ -294,6 +305,22 @@ public static class GammaBrightness
             }
         }
         return restored;
+    }
+
+    /// <summary>当前曲线是否是 identity 的纯缩放(通道内线性、三通道一致)。</summary>
+    private static bool LooksLikePureScale(ushort[] ramp, ushort top)
+    {
+        if (top == 0) return false;
+
+        for (int i = 0; i < 256; i++)
+        {
+            double expected = i / 255.0 * top;
+            if (Math.Abs(ramp[i] - expected) > 512) return false;
+            if (Math.Abs(ramp[256 + i] - expected) > 512) return false;
+            if (Math.Abs(ramp[512 + i] - expected) > 512) return false;
+        }
+
+        return true;
     }
 
     private static ushort[] BuildRamp(ushort[] baseRamp, int level)

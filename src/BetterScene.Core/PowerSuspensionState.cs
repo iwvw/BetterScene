@@ -14,7 +14,7 @@ public static class PowerSuspensionState
     {
         if (_isSuspended) return;
         _isSuspended = true;
-        _resumedAtMs = MonoClock.Never;
+        Volatile.Write(ref _resumedAtMs, MonoClock.Never);
         Log.Info("system is suspending");
         try { Suspended?.Invoke(); } catch { }
     }
@@ -22,7 +22,7 @@ public static class PowerSuspensionState
     public static void NotifyResume()
     {
         _isSuspended = false;
-        _resumedAtMs = MonoClock.NowMs;
+        Volatile.Write(ref _resumedAtMs, MonoClock.NowMs);
         Log.Info("system resumed from suspend");
         try { Resumed?.Invoke(); } catch { }
     }
@@ -30,5 +30,5 @@ public static class PowerSuspensionState
     public static bool IsSuspended => _isSuspended;
 
     public static bool IsResuming =>
-        _isSuspended || MonoClock.Within(_resumedAtMs, ResumeGracePeriodMs);
+        _isSuspended || MonoClock.Within(Volatile.Read(ref _resumedAtMs), ResumeGracePeriodMs);
 }

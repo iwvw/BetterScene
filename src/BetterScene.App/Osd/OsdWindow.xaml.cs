@@ -176,7 +176,14 @@ public sealed partial class OsdWindow : Window
     private void ApplyLevel(int level)
     {
         int clamped = Math.Clamp(level, 0, 100);
-        if (clamped == _level) return;
+
+        // 值没变也要排程提交:硬件可能被别的途径(实体键/系统亮度条)改过,
+        // 而 _level 仍是旧值,直接早退就永远不会重新下发。
+        if (clamped == _level)
+        {
+            ScheduleCommit();
+            return;
+        }
 
         _level = clamped;
         UpdateFill();
@@ -323,7 +330,7 @@ public sealed partial class OsdWindow : Window
                 TrySetBackdrop();
             }
 
-            _slider.Animate(_shownRect, ShowDurationMs,
+            _slider.Animate(_shownRect, AnimationSettings.Scale(ShowDurationMs),
                 easeIn: false, onCompleted: () => _animating = false);
             _animating = true;
         }
@@ -337,7 +344,7 @@ public sealed partial class OsdWindow : Window
                 // 正在退场时切了显示器，直接落位并重新入场。
                 _hiding = false;
                 SlideTo(_hiddenRect);
-                _slider.Animate(_shownRect, ShowDurationMs,
+                _slider.Animate(_shownRect, AnimationSettings.Scale(ShowDurationMs),
                     easeIn: false, onCompleted: () => _animating = false);
                 _animating = true;
             }
@@ -388,7 +395,7 @@ public sealed partial class OsdWindow : Window
         _topTimer.Stop();
         _dragging = false;
 
-        _slider.Animate(_hiddenRect, HideDurationMs,
+        _slider.Animate(_hiddenRect, AnimationSettings.Scale(HideDurationMs),
             easeIn: true, onCompleted: () =>
             {
                 if (!_hiding) return;
@@ -611,6 +618,8 @@ public sealed partial class OsdWindow : Window
         _appWindow.Hide();
         _shown = false;
         _hiding = false;
+        _dragging = false;
+        _animating = false;
         SlideTo(_shownRect);
     }
 
@@ -627,6 +636,13 @@ public sealed partial class OsdWindow : Window
 
         _hideTimer.Stop();
         _topTimer.Stop();
+
+        lock (_commitGate)
+        {
+            _commitTimer?.Dispose();
+            _commitTimer = null;
+        }
+
         _slider.Dispose();
         _appWindow.Destroy();
     }

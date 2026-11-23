@@ -78,13 +78,24 @@ public static class DdcSentinel
     {
         try
         {
-            Directory.CreateDirectory(AppPaths.SentinelDir);
-            File.WriteAllText(UnstablePath, JsonSerializer.Serialize(state, Json));
+            AtomicWrite(UnstablePath, JsonSerializer.Serialize(state, Json));
         }
         catch (Exception ex)
         {
             Log.Warn($"save ddc unstable state failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 先写临时文件再原子替换,避免在写入过程中崩溃把哨兵文件截断成非法内容。
+    /// 哨兵的全部价值就是「崩溃可被检测到」,不能自己先崩坏。
+    /// </summary>
+    private static void AtomicWrite(string path, string content)
+    {
+        Directory.CreateDirectory(AppPaths.SentinelDir);
+        string temp = path + "." + Environment.ProcessId + ".tmp";
+        File.WriteAllText(temp, content);
+        File.Move(temp, path, overwrite: true);
     }
 
     public static DdcUnstableState CheckAndRecordCrash()
@@ -152,7 +163,7 @@ public static class DdcSentinel
                 Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
 
-            File.WriteAllText(LockPath, JsonSerializer.Serialize(evidence, Json));
+            AtomicWrite(LockPath, JsonSerializer.Serialize(evidence, Json));
         }
         catch (Exception ex)
         {
@@ -237,9 +248,18 @@ public static class DdcSentinel
     /// </summary>
     private static bool PruneExpiredLocked(DdcUnstableState state)
     {
-        if (state.Monitors is null || state.Monitors.Count == 0) return false;
-
         bool changed = false;
+
+        // 全局降级记录(崩溃时拿不到具体显示器)同样必须过期,
+        // 否则一次偶发崩溃会让「准确探测」永久全局失效。
+        if (state.Downgraded is not null && IsExpired(state.Downgraded))
+        {
+            Log.Info($"ddc global downgrade expired (stage={state.Downgraded.Stage}), allowing accurate probe again");
+            state.Downgraded = null;
+            changed = true;
+        }
+
+        if (state.Monitors is null || state.Monitors.Count == 0) return changed;
 
         foreach ((string id, DdcCrashEvidence evidence) in state.EnumerateAffected().ToList())
         {

@@ -175,7 +175,11 @@ internal static class CapabilityProbe
         // 同形态排在一起后，眼睛可以按"连续的条 / 框 / 按钮"快速定位。
         //
         // 组内保持原有顺序（VCP 升序）：那是稳定的，不会每次探测都变。
-        result.Items.Sort((a, b) => KindOrder(a.Kind).CompareTo(KindOrder(b.Kind)));
+        // 组内保持原有顺序(VCP 升序):那是稳定的,不会每次探测都变。
+        // 用稳定排序(OrderBy)而不是 List.Sort(introsort 不稳定),以免列表变长后顺序抖动。
+        var ordered = result.Items.OrderBy(i => KindOrder(i.Kind)).ToList();
+        result.Items.Clear();
+        result.Items.AddRange(ordered);
     }
 
     /// <summary>控件形态的排列优先级：滑块最常用，放最前；按钮组最少用，放最后。</summary>
@@ -358,9 +362,13 @@ internal static class CapabilityProbe
                         }
                     }
                 }
+
+                break;
             }
 
-            break;
+            // 命中的不是本项的表头(这个十六进制串恰好出现在前面某项的取值列表里),
+            // 继续往后找真正的表头,否则这类枚举型控件会被静默丢掉。
+            index = hit + 2;
         }
 
         return values;

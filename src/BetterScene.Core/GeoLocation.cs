@@ -28,7 +28,8 @@ public static class GeoLocation
         {
             var locator = new Geolocator
             {
-                DesiredAccuracyInMeters = (uint)Math.Max(1, desiredAccuracyMeters),
+                DesiredAccuracyInMeters = (uint)Math.Clamp(
+                    double.IsFinite(desiredAccuracyMeters) ? desiredAccuracyMeters : 1000, 1, 100000),
                 ReportInterval = 0,
             };
 

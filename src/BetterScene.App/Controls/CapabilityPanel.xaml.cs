@@ -62,6 +62,7 @@ public sealed class ControlRow : INotifyPropertyChanged
     private readonly MonitorControl _model;
     private readonly Action<byte, uint> _write;
     private bool _suppress;
+    private uint _lastConfirmed;
 
     /// <summary>
     /// 这台显示器当前是否处于 HDR 模式。
@@ -97,6 +98,7 @@ public sealed class ControlRow : INotifyPropertyChanged
     {
         _model = model;
         _write = write;
+        _lastConfirmed = model.Current;
 
         Name = model.Name;
 
@@ -285,6 +287,7 @@ public sealed class ControlRow : INotifyPropertyChanged
         _suppress = true;
 
         _model.Current = value;
+        _lastConfirmed = value;
         _value = _model.Kind == ControlKind.Slider ? RawToPercent(value) : value;
 
         int index = _model.Choices.FindIndex(c => c.Value == value);
@@ -296,6 +299,12 @@ public sealed class ControlRow : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedIndex));
         OnPropertyChanged(nameof(ValueText));
     }
+
+    /// <summary>写回失败时退回最近一次确认的实际值。</summary>
+    public void RevertToConfirmed() => RevertTo(_lastConfirmed);
+
+    /// <summary>写入成功后把「已确认值」更新为目标值。</summary>
+    public void Confirm(uint value) => _lastConfirmed = value;
 
     public byte Code => _model.Code;
 
@@ -538,13 +547,22 @@ public sealed partial class CapabilityPanel : UserControl
     /// <summary>写入失败时把对应控件退回实际值。</summary>
     public void OnWriteResult(byte code, uint value, bool ok)
     {
-        if (ok) return;
+        if (ok)
+        {
+            foreach (ControlRow row in Controls)
+            {
+                if (row.Code == code) row.Confirm(value);
+            }
+
+            return;
+        }
 
         foreach (ControlRow row in Controls)
         {
             if (row.Code != code) continue;
 
             // 重新读取实际值更准确，但读要几百毫秒；这里先退回到写入前的值。
+            row.RevertToConfirmed();
             WriteFailed?.Invoke(code, value);
         }
     }

@@ -33,8 +33,6 @@ public sealed class AccessHealth
                 _entries[id] = entry;
             }
 
-            if (entry.Count >= NormalCount) return;
-
             bool wasHealthy = entry.Healthy;
             entry.Count = NormalCount;
             entry.Confirmed = true;

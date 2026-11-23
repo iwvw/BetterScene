@@ -62,7 +62,7 @@ public static class DisplayNaming
         if (string.IsNullOrWhiteSpace(vendor)) return name;
         if (name.Contains(vendor, StringComparison.OrdinalIgnoreCase)) return name;
 
-        // 4 位以上的厂商缩写才当作 PnP 代码，避免把短单词误判。
+        // 型号里没写品牌时补上 PnP 厂商缩写。
         return $"{vendor} {name}";
     }
 

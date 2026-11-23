@@ -183,7 +183,7 @@ public static class ControlCli
         public bool Json;
         public bool Pretty;
         public bool Help;
-        public int TimeoutMs = 10_000;
+        public int TimeoutMs = 35_000;
         public string[] Command = Array.Empty<string>();
         public Dictionary<string, string> Parsed = new(StringComparer.OrdinalIgnoreCase);
     }

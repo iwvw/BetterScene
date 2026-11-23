@@ -6,7 +6,6 @@
     <AssemblyTitle>Windows 视觉改善</AssemblyTitle>
     <Product>Windows 视觉改善</Product>
     <Description>Windows 视觉改善 - 场景化的明暗与亮度管理</Description>
-    <Version>0.1.0</Version>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>

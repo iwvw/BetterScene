@@ -12,9 +12,10 @@ public readonly record struct UpdateInfo(
     string LatestVersion,
     string PortableUrl,
     string ReleaseUrl,
-    string Notes)
+    string Notes,
+    string ChecksumsUrl)
 {
-    public static UpdateInfo None => new(false, string.Empty, string.Empty, string.Empty, string.Empty);
+    public static UpdateInfo None => new(false, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
 }
 
 /// <summary>
@@ -50,12 +51,12 @@ public static class UpdateService
         File.Exists(Path.Combine(AppContext.BaseDirectory, "unins000.exe"));
 
     /// <summary>查询最新 Release。任何失败都返回 None。</summary>
-    public static async Task<UpdateInfo> CheckAsync(string? accelerator = null,
+    public static async Task<(UpdateInfo Info, bool Ok)> TryCheckAsync(string? accelerator = null,
         CancellationToken token = default)
     {
         string apiUrl = $"https://api.github.com/repos/{Repo}/releases/latest";
         string? json = await GetStringWithMirrorsAsync(apiUrl, accelerator, token);
-        if (json is null) return UpdateInfo.None;
+        if (json is null) return (UpdateInfo.None, false);
 
         try
         {
@@ -74,20 +75,33 @@ public static class UpdateService
                 ? b.GetString() ?? string.Empty
                 : string.Empty;
 
-            if (string.IsNullOrWhiteSpace(tag)) return UpdateInfo.None;
+            if (string.IsNullOrWhiteSpace(tag)) return (UpdateInfo.None, false);
 
-            string latest = tag.TrimStart('v', 'V');
-            if (CompareVersions(latest, CurrentVersion()) <= 0) return UpdateInfo.None;
+            // 只去掉一个前导 v,并把版本号限制在安全字符集内:
+            // tag 会被拼进临时目录名和 .cmd 脚本,不能让它带 % / 空格 等。
+            string trimmed = tag.Length > 0 && (tag[0] is 'v' or 'V') ? tag[1..] : tag;
+            string latest = new string(trimmed.Where(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_').ToArray());
+            if (latest.Length == 0) return (UpdateInfo.None, false);
+            if (CompareVersions(latest, CurrentVersion()) <= 0) return (UpdateInfo.None, true);
 
             string portable = FindPortableAsset(root, latest);
-            if (string.IsNullOrWhiteSpace(portable)) return UpdateInfo.None;
+            if (string.IsNullOrWhiteSpace(portable)) return (UpdateInfo.None, true);
 
-            return new UpdateInfo(true, latest, portable, releaseUrl, notes);
+            string checksums = FindChecksumsAsset(root);
+
+            return (new UpdateInfo(true, latest, portable, releaseUrl, notes, checksums), true);
         }
         catch
         {
-            return UpdateInfo.None;
+            return (UpdateInfo.None, false);
         }
+    }
+
+    /// <summary>查询最新 Release。任何失败都返回 None(需要区分失败请用 <see cref="TryCheckAsync"/>)。</summary>
+    public static async Task<UpdateInfo> CheckAsync(string? accelerator = null, CancellationToken token = default)
+    {
+        (UpdateInfo info, _) = await TryCheckAsync(accelerator, token).ConfigureAwait(false);
+        return info;
     }
 
     /// <summary>下载更新包并生成应用脚本，成功后硬退出本进程。</summary>
@@ -115,6 +129,13 @@ public static class UpdateService
                 info.PortableUrl, target, accelerator, progress, token);
 
             if (downloaded is null) return false;
+
+            // 有校验和就强制校验,不一致直接丢弃,绝不解压执行被篡改的包。
+            if (!await VerifyChecksumAsync(info, accelerator, downloaded, token).ConfigureAwait(false))
+            {
+                try { File.Delete(downloaded); } catch { }
+                return false;
+            }
 
             string script = WriteUpdateScript(downloaded, workDir);
 
@@ -157,19 +178,22 @@ public static class UpdateService
         sb.AppendLine("if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto WAIT )");
 
         sb.AppendLine($"powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '{zip}' -DestinationPath '{extract}' -Force\"");
+        sb.AppendLine($"if errorlevel 1 echo expand-archive failed >> \"%~dp0update-failed.log\"");
 
         // 压缩包里是一个 BetterScene 文件夹，robocopy 从它覆盖到程序目录。
         sb.AppendLine($"robocopy \"{extract}\\BetterScene\" \"{app}\" /E /NFL /NDL /NJH /NJS /R:1 /W:1 >nul");
+        sb.AppendLine($"if errorlevel 8 echo robocopy failed >> \"%~dp0update-failed.log\"");
 
         // 兜底：如果压缩包是散落的文件（没有外层文件夹），再直接从 extract 覆盖一次。
-        sb.AppendLine($"if exist \"{extract}\\{AppExeName}\" robocopy \"{extract}\" \"{app}\" /E /NFL /NDL /NJH /NJS /R:1 /W:1 >nul");
+        sb.AppendLine($"if exist \"{extract}\\{AppExeName}\" ( robocopy \"{extract}\" \"{app}\" /E /NFL /NDL /NJH /NJS /R:1 /W:1 >nul & if errorlevel 8 echo robocopy (flat) failed >> \"%~dp0update-failed.log\" )");
 
         sb.AppendLine($"rmdir /s /q \"{extract}\"");
         sb.AppendLine($"del /f /q \"{zip}\" >nul 2>&1");
         sb.AppendLine($"start \"\" \"{app}\\{AppExeName}\"");
         sb.AppendLine("del \"%~f0\"");
 
-        File.WriteAllText(script, sb.ToString(), Encoding.UTF8);
+        // 必须无 BOM:cmd.exe 对带 BOM 的批处理首行会解析失败。
+        File.WriteAllText(script, sb.ToString(), new UTF8Encoding(false));
         return script;
     }
 
@@ -237,6 +261,98 @@ public static class UpdateService
         }
 
         return fallback;
+    }
+
+    /// <summary>找发布里的校验和文件(可选)。有就校验,没有则跳过并记日志。</summary>
+    private static string FindChecksumsAsset(JsonElement release)
+    {
+        if (!release.TryGetProperty("assets", out JsonElement assets)
+            || assets.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        foreach (JsonElement asset in assets.EnumerateArray())
+        {
+            string name = asset.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? string.Empty : string.Empty;
+            if (!name.Equals("checksums.txt", StringComparison.OrdinalIgnoreCase) &&
+                !name.Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase) &&
+                !name.Equals("checksums.sha256", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return asset.TryGetProperty("browser_download_url", out JsonElement u)
+                ? u.GetString() ?? string.Empty
+                : string.Empty;
+        }
+
+        return string.Empty;
+    }
+
+    private static async Task<bool> VerifyChecksumAsync(
+        UpdateInfo info, string? accelerator, string file, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(info.ChecksumsUrl))
+        {
+            // 发布里没有校验和:只能放弃校验。留一条痕迹,便于后续补齐发布流程。
+            Log.Warn("update: release has no checksums asset, integrity check skipped");
+            return true;
+        }
+
+        string? text = await GetStringWithMirrorsAsync(info.ChecksumsUrl, accelerator, token).ConfigureAwait(false);
+        if (text is null)
+        {
+            Log.Warn("update: checksums download failed");
+            return false;
+        }
+
+        string fileName = Path.GetFileName(file);
+        string expected = FindHashEntry(text, fileName);
+        if (expected.Length == 0)
+        {
+            // 校验和文件里没有该条目的映射:不阻断更新(命名差异很常见),只记日志。
+            Log.Warn($"update: checksums has no entry for {fileName}, integrity check skipped");
+            return true;
+        }
+
+        string actual = await ComputeSha256Async(file, token).ConfigureAwait(false);
+
+        if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Error($"update: checksum mismatch for {fileName} expected={expected} actual={actual}");
+            return false;
+        }
+
+        Log.Info($"update: checksum verified for {fileName}");
+        return true;
+    }
+
+    private static string FindHashEntry(string checksums, string fileName)
+    {
+        foreach (string raw in checksums.Split('\n'))
+        {
+            string line = raw.Trim();
+            if (line.Length == 0) continue;
+
+            string[] parts = line.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2) continue;
+
+            string name = parts[1].TrimStart('*').Trim().Replace('\\', '/');
+            int slash = name.LastIndexOf('/');
+            if (slash >= 0) name = name[(slash + 1)..];
+            if (name.Equals(fileName, StringComparison.OrdinalIgnoreCase)) return parts[0].Trim();
+        }
+
+        return string.Empty;
+    }
+
+    private static async Task<string> ComputeSha256Async(string file, CancellationToken token)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        await using FileStream stream = File.OpenRead(file);
+        byte[] hash = await sha.ComputeHashAsync(stream, token).ConfigureAwait(false);
+        return Convert.ToHexString(hash);
     }
 
     private static IEnumerable<string> MirrorChain(string? accelerator)

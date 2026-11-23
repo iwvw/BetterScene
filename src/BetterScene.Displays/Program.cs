@@ -114,22 +114,29 @@ internal static class Program
             // 显示器插拔/排列变化时自动重新枚举并推送给主程序。
             // 显示拓扑变化往往在几百毫秒内连发多条通知，这里做去抖。
             int changePending = 0;
-            var watcher = new DisplayChangeWatcher(() =>
+            int changeRunning = 0;
+
+            // 去抖 + 不丢事件:处理期间到达的新通知记成 pending,由同一 worker 循环继续处理。
+            void ScheduleRefresh()
             {
-                if (Interlocked.Exchange(ref changePending, 1) == 1) return;
+                Interlocked.Exchange(ref changePending, 1);
+                if (Interlocked.Exchange(ref changeRunning, 1) == 1) return;
 
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         // 等系统把新的显示拓扑稳定下来，否则可能读到中间状态。
-                        await Task.Delay(700).ConfigureAwait(false);
+                        while (Interlocked.Exchange(ref changePending, 0) == 1)
+                        {
+                            await Task.Delay(700).ConfigureAwait(false);
 
-                        Log.Info("display change detected, re-enumerating");
-                        List<DisplayTarget> updated = worker.Refresh();
-                        Send(new DisplayMessage { Type = "displays", Displays = updated });
-                        Log.Info($"worker re-reported {updated.Count} display(s)");
-                        LogDisplays(updated);
+                            Log.Info("display change detected, re-enumerating");
+                            List<DisplayTarget> updated = worker.Refresh();
+                            Send(new DisplayMessage { Type = "displays", Displays = updated });
+                            Log.Info($"worker re-reported {updated.Count} display(s)");
+                            LogDisplays(updated);
+                            }
                     }
                     catch (Exception ex)
                     {
@@ -137,15 +144,20 @@ internal static class Program
                     }
                     finally
                     {
-                        Interlocked.Exchange(ref changePending, 0);
+                        Interlocked.Exchange(ref changeRunning, 0);
+                        // 收尾窗口里若又来了通知(此时 changeRunning 仍是 1,别人不会接手),补跑一次。
+                        if (Interlocked.CompareExchange(ref changePending, 0, 0) == 1) ScheduleRefresh();
                     }
                 });
-            });
+            }
+
+            var watcher = new DisplayChangeWatcher(ScheduleRefresh);
 
             watcher.Start();
 
+            bool quitRequested = false;
             string? line;
-            while ((line = input.ReadLine()) is not null)
+            while (!quitRequested && (line = input.ReadLine()) is not null)
             {
                 if (line.Length == 0) continue;
                 try
@@ -161,6 +173,7 @@ internal static class Program
 
             watcher.Dispose();
             throttle.Dispose();
+            worker.Dispose();
             heartbeat.Dispose();
             try
             {
@@ -172,6 +185,21 @@ internal static class Program
             pipeServer?.Dispose();
             Log.Info("displays worker exiting");
             return 0;
+
+            static bool TryGetVcpByte(JsonElement root, out byte value)
+            {
+                value = 0;
+                if (!root.TryGetProperty("code", out JsonElement element) ||
+                    element.ValueKind != JsonValueKind.Number ||
+                    !element.TryGetInt32(out int raw) ||
+                    raw < 0 || raw > 255)
+                {
+                    return false;
+                }
+
+                value = (byte)raw;
+                return true;
+            }
 
             void Handle(string raw)
             {
@@ -192,8 +220,11 @@ internal static class Program
                             bool burst = doc.RootElement.TryGetProperty("burst", out var burstElement)
                                 && burstElement.ValueKind == JsonValueKind.True;
 
-                            if (burst) throttle.FlushNow();
+                            // 必须先 Push 再 FlushNow:FlushNow 只会把「已有待写值」的项
+                            // 的 NextAllowedMs 置为立即,若先 flush 再 push,push 复用的仍是
+                            // 未来时刻,点按类操作会被节流到窗口末尾才写(见 BrightnessThrottleTests)。
                             throttle.Push(id, value);
+                            if (burst) throttle.FlushNow();
                             break;
                         }
 
@@ -254,7 +285,11 @@ internal static class Program
                     case "write-control":
                         {
                             string id = doc.RootElement.GetProperty("id").GetString() ?? string.Empty;
-                            byte code = (byte)doc.RootElement.GetProperty("code").GetInt32();
+                            if (!TryGetVcpByte(doc.RootElement, out byte code))
+                            {
+                                Send(new DisplayMessage { Type = "error", Id = id, Error = "VCP code 必须在 0-255 之间" });
+                                break;
+                            }
                             uint value = doc.RootElement.GetProperty("value").GetUInt32();
 
                             DisplayTarget? target = worker.Displays.FirstOrDefault(t =>
@@ -276,7 +311,11 @@ internal static class Program
                     case "write-control-sync":
                         {
                             string id = doc.RootElement.GetProperty("id").GetString() ?? string.Empty;
-                            byte code = (byte)doc.RootElement.GetProperty("code").GetInt32();
+                            if (!TryGetVcpByte(doc.RootElement, out byte code))
+                            {
+                                Send(new DisplayMessage { Type = "error", Id = id, Error = "VCP code 必须在 0-255 之间" });
+                                break;
+                            }
                             uint value = doc.RootElement.GetProperty("value").GetUInt32();
 
                             DisplayTarget? target = worker.Displays.FirstOrDefault(t =>
@@ -298,18 +337,26 @@ internal static class Program
                                 break;
                             }
 
-                            throttle.FlushNow();
-
                             foreach (var item in items.EnumerateArray())
                             {
-                                if (!item.TryGetProperty("id", out var idElement)) continue;
-                                if (!item.TryGetProperty("value", out var valueElement)) continue;
+                                try
+                                {
+                                    if (!item.TryGetProperty("id", out var idElement)) continue;
+                                    if (!item.TryGetProperty("value", out var valueElement)) continue;
 
-                                string itemId = idElement.GetString() ?? string.Empty;
-                                if (itemId.Length == 0) continue;
+                                    string itemId = idElement.GetString() ?? string.Empty;
+                                    if (itemId.Length == 0) continue;
 
-                                throttle.Push(itemId, valueElement.GetInt32());
+                                    throttle.Push(itemId, valueElement.GetInt32());
+                                }
+                                catch (Exception ex)
+                                {
+                                    // 单条坏数据不应该中止整批写入。
+                                    Log.Warn($"set-batch item skipped: {ex.Message}");
+                                }
                             }
+
+                            throttle.FlushNow();
                             break;
                         }
 
@@ -322,7 +369,8 @@ internal static class Program
                         }
 
                     case "quit":
-                        Environment.Exit(0);
+                        // 不再用 Environment.Exit 跳过清理:置标志让控制流走到统一的清理段。
+                        quitRequested = true;
                         break;
                 }
             }

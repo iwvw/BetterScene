@@ -21,7 +21,7 @@ BetterScene：Windows 原生屏幕场景管理工具。把「系统明暗」和�
 - 色温 / 夜灯接管（CloudStore / Bond 编解码）
 - 强调色、光标、触摸键盘、灰度滤镜
 - 对比度、音量、输入源、显示器电源（DDC 次要 VCP）
-- 自动调度（日出日落 / 定时 / 传感器）—— V2
+- 自动调度(日出日落 / 定时 / 电池深色)在 V1.5 已实现;传感器调度留待 V2
 - 按应用的 profile —— V2
 
 ## 架构心智模型
@@ -57,10 +57,10 @@ BetterScene：Windows 原生屏幕场景管理工具。把「系统明暗」和�
 | Accurate 扫描 | 读 capabilities 字符串解析完整能力集，**有挂死风险**，后台做 |
 | 哨兵文件（Sentinel） | `ddc-probe.lock`：DDC 操作前写入、正常结束删除；启动时发现残留即判定上次崩溃，把该显示器永久降级为 Fast |
 | 双段节流（Leading + Trailing） | 每显示器独立计时：立即写一次，窗口内重复请求合并成最后一个值，到窗口末尾再写一次 |
-| 受管主题（Managed Theme） | 程序自己维护的 `.theme` 文件，`IThemeManager2` 一次性应用 |
-| `IThemeManager2` | 未文档化 COM（CLSID `9324da94-50ec-4a14-a770-e90ca03e7c8f`），主题应用的主路径 |
+| 受管主题(Managed Theme) | V1 不生成受管 `.theme`;直接读取用户指定的 `.theme` 并应用其壁纸 / 强调色 |
+| `IThemeManager2` | 未文档化 COM(CLSID `9324da94-50ec-4a14-a770-e90ca03e7c8f`);**当前未使用**,主题改走 `ThemeFileService` 直写注册表 + 壁纸 + 强调色 |
 | 降级路径 | `IThemeManager2` 失败时：直接写两个 `Personalize` 键 + 广播 |
-| 激进的 DWM 刷新 | 广播无效时：把强调色最低位 ±1 → 应用临时主题 → 等 1s → 应用正题 |
+| 激进的 DWM 刷新 | 当前未实现;广播失败只做一次 250ms 重试 |
 | `IgnoreBackground` | `ThemeApplyFlags` 之一；不涉及壁纸的切换必须带上，否则壁纸会重新加载而闪烁 |
 
 ## 内屏背光写入（WMI 不可信）
@@ -81,10 +81,12 @@ BetterScene：Windows 原生屏幕场景管理工具。把「系统明暗」和�
 
 **修复**：`WmiBrightness.TrySet` 的顺序是
 
-1. WMI 写入（快，30ms）
-2. 轮询注册表里的方案值，确认真的落地
-3. 没落地就 `powercfg /setacvalueindex` + `/setactive` 兜底
-4. 再校验，最多 3 轮
+1. 直接 `PowerWriteACValueIndex` + `PowerWriteDCValueIndex`(AC / DC 都写)
+2. `PowerSetActiveScheme` 激活方案(只写索引不激活,背光不动)
+3. 轮询电源方案值确认真的落地,最多 3 轮
+4. 任一写入失败(含 DC)都算失败,避免拔电源后跳回旧值
+
+不再调用 `WmiSetBrightness`:它对策略层无效,只会造成「看起来成功」的假象。
 
 修复后实测 20/20、10/10、10/10 全部正确落地，兜底平均在第 1 次尝试就触发。
 

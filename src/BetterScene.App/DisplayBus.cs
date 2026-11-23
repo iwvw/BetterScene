@@ -17,9 +17,7 @@ public static class DisplayBus
 
     public static void Attach(DisplayService service)
     {
-        if (_service is not null) _service.DisplaysChanged -= OnDisplays;
         _service = service;
-        service.DisplaysChanged += OnDisplays;
 
         // 收敛器需要绕过 DisplayBus 直连管道，避免递归。
         BrightnessHub.RawWriter = (id, level) => service.SetBrightness(id, level);
@@ -27,21 +25,8 @@ public static class DisplayBus
 
     public static void Detach()
     {
-        if (_service is not null) _service.DisplaysChanged -= OnDisplays;
         _service = null;
         BrightnessHub.RawWriter = null;
-    }
-
-    private static void OnDisplays(List<DisplayTarget> targets)
-    {
-        if (targets.Count == 0 && Current.Count > 0)
-        {
-            Log.Warn("display list came back empty, keeping previous entries");
-            return;
-        }
-
-        Current = targets;
-        Changed?.Invoke();
     }
 
     public static void Refresh() => _service?.Refresh();
@@ -65,7 +50,20 @@ public static class DisplayBus
         }
 
         Current = targets;
-        Changed?.Invoke();
+
+        // 逐个订阅者隔离异常:一个订阅者抛异常不应该让其余订阅者收不到通知。
+        Delegate[] handlers = Changed?.GetInvocationList() ?? Array.Empty<Delegate>();
+        foreach (Delegate handler in handlers)
+        {
+            try
+            {
+                ((Action)handler)();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"display changed handler failed: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>

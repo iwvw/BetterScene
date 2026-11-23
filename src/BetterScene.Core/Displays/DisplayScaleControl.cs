@@ -29,8 +29,9 @@ public readonly record struct ScaleStep(int Relative, int Percent)
 /// </summary>
 public static class DisplayScaleControl
 {
-    /// <summary>Windows 的缩放档位阶梯。</summary>
-    public static readonly int[] Presets = [100, 125, 150, 175, 200, 225, 250, 300];
+    /// <summary>Windows 的缩放档位阶梯(100%–500%)。</summary>
+    public static readonly int[] Presets =
+        [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
 
     /// <summary>读这台显示器当前实际生效的缩放百分比。</summary>
     public static int? Read(DisplayTarget target) => ReadActualPercent(target);
@@ -64,7 +65,7 @@ public static class DisplayScaleControl
         // 所以推荐值在阶梯上的位置 = 当前位置 - 偏移。
         int recommendedIndex = currentIndex - curRel;
 
-        var steps = new List<ScaleStep>(maxRel - minRel + 1);
+        var steps = new List<ScaleStep>(Math.Max(0, maxRel - minRel + 1));
 
         for (int rel = minRel; rel <= maxRel; rel++)
         {

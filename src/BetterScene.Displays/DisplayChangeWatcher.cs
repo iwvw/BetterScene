@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using BetterScene.Core;
 
 namespace BetterScene.Displays;
 
@@ -21,7 +22,7 @@ internal sealed class DisplayChangeWatcher : IDisposable
     private readonly WndProcDelegate _wndProc;
     private readonly string _className;
     private Thread? _thread;
-    private IntPtr _hwnd;
+    private volatile IntPtr _hwnd;
     private IntPtr _readyEvent;
     private volatile bool _disposed;
 
@@ -36,6 +37,10 @@ internal sealed class DisplayChangeWatcher : IDisposable
     {
         if (_thread is not null) return;
         _readyEvent = CreateEventW(IntPtr.Zero, true, false, null);
+        if (_readyEvent == IntPtr.Zero)
+        {
+            Log.Warn("display change watcher: CreateEvent failed, start will not wait for readiness");
+        }
 
         _thread = new Thread(ThreadLoop)
         {
@@ -59,9 +64,21 @@ internal sealed class DisplayChangeWatcher : IDisposable
                 lpszClassName = _className,
             };
 
-            _ = RegisterClassW(ref wndClass);
+            if (RegisterClassW(ref wndClass) == 0)
+            {
+                Log.Warn("display change watcher: RegisterClass failed, auto re-enumerate disabled");
+                _ = SetEvent(_readyEvent);
+                return;
+            }
+
             _hwnd = CreateWindowExW(0, _className, _className, 0, 0, 0, 0, 0,
                 IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
+            if (_hwnd == IntPtr.Zero)
+            {
+                Log.Warn("display change watcher: CreateWindowEx failed, auto re-enumerate disabled");
+                _ = SetEvent(_readyEvent);
+                return;
+            }
 
             _ = SetEvent(_readyEvent);
             while (!_disposed && GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)

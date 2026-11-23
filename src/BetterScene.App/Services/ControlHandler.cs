@@ -76,10 +76,10 @@ public sealed class ControlHandler
         "display.mode.set" => Task.FromResult(ModeSet(args)),
         "display.scale.set" => Task.FromResult(ScaleSet(args)),
         "display.hdr.set" => Task.FromResult(HdrSet(args)),
-        "display.vcp.get" => Task.FromResult(VcpGet(args)),
-        "display.vcp.set" => Task.FromResult(VcpSet(args)),
+        "display.vcp.get" => VcpGetAsync(args),
+        "display.vcp.set" => VcpSetAsync(args),
         "brightness.get" => Task.FromResult(BrightnessGet(args)),
-        "brightness.read" => Task.FromResult(BrightnessRead(args)),
+        "brightness.read" => BrightnessReadAsync(args),
         "brightness.set" => Task.FromResult(BrightnessSet(args)),
         "brightness.step" => Task.FromResult(BrightnessStep(args)),
         "scene.get" => Task.FromResult(SceneGet()),
@@ -408,7 +408,7 @@ public sealed class ControlHandler
     /// 哨兵文件保护、能力串解析、以及"声明里没有也实测一遍"的兜底，
     /// 单独发读请求等于把这套保护绕过去。
     /// </summary>
-    private static JsonObject VcpGet(JsonObject args)
+    private static async Task<JsonObject> VcpGetAsync(JsonObject args)
     {
         List<DisplayTarget> targets = DisplaySelector.Resolve(Snapshot(), args.OptionalString("display"));
         byte? code = args.TryGetPropertyValue("code", out JsonNode? codeNode) && codeNode is not null
@@ -418,13 +418,15 @@ public sealed class ControlHandler
         var applied = new JsonArray();
         var failures = new JsonArray();
 
+        long deadline = MonoClock.NowMs + 20000;
+
         foreach (DisplayTarget target in targets)
         {
             DisplayControls controls;
 
             try
             {
-                controls = ReadControlsBlocking(target);
+                controls = await ReadControlsAsync(target, RemainingDeadline(deadline)).ConfigureAwait(true);
             }
             catch (Exception ex)
             {
@@ -471,24 +473,28 @@ public sealed class ControlHandler
     }
 
     /// <summary>
-    /// 同步等待 <c>read-controls</c> 的结果。
+    /// 异步等待 <c>read-controls</c> 的结果。
     ///
-    /// 这条命令本身就是"读一次硬件"，本来就是阻塞语义，
-    /// 用事件等结果比把整个处理器改成异步更直接。
+    /// 非阻塞等待硬件结果,期间不占 UI 线程。
     /// </summary>
-    private static DisplayControls ReadControlsBlocking(DisplayTarget target)
+    /// <summary>一次控制命令里所有显示器读写的整体预算:避免逐台 15s 累加成 UI 长冻结。</summary>
+    private static TimeSpan RemainingDeadline(long deadlineMs)
+    {
+        long remaining = deadlineMs - MonoClock.NowMs;
+        return TimeSpan.FromMilliseconds(remaining <= 0 ? 1 : remaining);
+    }
+
+    private static async Task<DisplayControls> ReadControlsAsync(DisplayTarget target, TimeSpan timeout)
     {
         DisplayService? service = DisplayBus.Service;
         if (service is null) return new DisplayControls { DisplayId = target.Id, Error = "显示器服务未就绪" };
 
-        var done = new ManualResetEventSlim(false);
-        DisplayControls? received = null;
+        var tcs = new TaskCompletionSource<DisplayControls>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         void OnRead(DisplayControls controls)
         {
             if (!string.Equals(controls.DisplayId, target.Id, StringComparison.OrdinalIgnoreCase)) return;
-            received = controls;
-            done.Set();
+            tcs.TrySetResult(controls);
         }
 
         service.ControlsRead += OnRead;
@@ -497,17 +503,19 @@ public sealed class ControlHandler
         {
             DisplayBus.ReadControls(target.Id);
 
-            if (!done.Wait(TimeSpan.FromSeconds(15)))
+            // 非阻塞等待:命中的结果或超时先到者胜出,期间不占 UI 线程。
+            try
+            {
+                return await tcs.Task.WaitAsync(timeout).ConfigureAwait(true);
+            }
+            catch (TimeoutException)
             {
                 return new DisplayControls { DisplayId = target.Id, Error = "读取控制项超时" };
             }
-
-            return received ?? new DisplayControls { DisplayId = target.Id, Error = "没有收到结果" };
         }
         finally
         {
             service.ControlsRead -= OnRead;
-            done.Dispose();
         }
     }
 
@@ -517,29 +525,75 @@ public sealed class ControlHandler
     /// 走 <c>write-control-sync</c> 而不是合并队列：外部调用是一次性的
     /// 明确意图，需要知道成功与否；队列版本不回传结果。
     /// </summary>
-    private static JsonObject VcpSet(JsonObject args)
+    private static async Task<JsonObject> VcpSetAsync(JsonObject args)
     {
         byte code = args.RequireByte("code");
-        uint value = args.RequireUInt("value");
+        uint value = args.RequireUInt("value", 0xFFFF);
         List<DisplayTarget> targets = DisplaySelector.ResolveControllable(
             Snapshot(), args.OptionalString("display"));
 
         var applied = new JsonArray();
+        var failures = new JsonArray();
+
+        long deadline = MonoClock.NowMs + 20000;
 
         foreach (DisplayTarget target in targets)
         {
-            DisplayBus.WriteControlSync(target.Id, code, value);
-
-            applied.Add(new JsonObject
+            (bool wrote, bool ok, string? error) = await WriteControlAsync(target, code, value, RemainingDeadline(deadline)).ConfigureAwait(true);
+            if (wrote && ok)
             {
-                ["id"] = target.Id,
-                ["title"] = DisplayNaming.Title(target),
-                ["code"] = $"0x{code:X2}",
-                ["value"] = value,
-            });
+                applied.Add(new JsonObject
+                {
+                    ["id"] = target.Id,
+                    ["title"] = DisplayNaming.Title(target),
+                    ["code"] = $"0x{code:X2}",
+                    ["value"] = value,
+                });
+            }
+            else
+            {
+                failures.Add(Failure(target, error ?? "写入失败"));
+            }
         }
 
-        return new JsonObject { ["applied"] = applied };
+        return BuildResult(applied, failures);
+    }
+
+    /// <summary>异步等待一次 VCP 写入结果(与其它命令一致:外部调用需要知道成败)。</summary>
+    private static async Task<(bool Wrote, bool Ok, string? Error)> WriteControlAsync(
+        DisplayTarget target, byte code, uint value, TimeSpan timeout)
+    {
+        DisplayService? service = DisplayBus.Service;
+        if (service is null) return (false, false, "显示器服务未就绪");
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnWritten(string id, byte writtenCode, uint writtenValue, bool success)
+        {
+            if (!string.Equals(id, target.Id, StringComparison.OrdinalIgnoreCase) || writtenCode != code) return;
+            tcs.TrySetResult(success);
+        }
+
+        service.ControlWritten += OnWritten;
+
+        try
+        {
+            DisplayBus.WriteControlSync(target.Id, code, value);
+
+            try
+            {
+                bool success = await tcs.Task.WaitAsync(timeout).ConfigureAwait(true);
+                return (true, success, success ? null : "显示器拒绝了该写入");
+            }
+            catch (TimeoutException)
+            {
+                return (false, false, "写入超时");
+            }
+        }
+        finally
+        {
+            service.ControlWritten -= OnWritten;
+        }
     }
 
     /// <summary>
@@ -588,17 +642,19 @@ public sealed class ControlHandler
     /// 顺带把意图值一起返回，调用方可以直接比对，
     /// 不必再发一次 brightness.get。
     /// </summary>
-    private static JsonObject BrightnessRead(JsonObject args)
+    private static async Task<JsonObject> BrightnessReadAsync(JsonObject args)
     {
         List<DisplayTarget> targets = DisplaySelector.Resolve(Snapshot(), args.OptionalString("display"));
 
         var applied = new JsonArray();
         var failures = new JsonArray();
 
+        long deadline = MonoClock.NowMs + 20000;
+
         foreach (DisplayTarget target in targets)
         {
             int intent = TryReadStruct(() => BrightnessHub.LevelOf(target), target.Brightness);
-            DisplayMessage reading = ReadHardwareBrightnessBlocking(target);
+            DisplayMessage reading = await ReadHardwareBrightnessAsync(target, RemainingDeadline(deadline)).ConfigureAwait(true);
 
             if (reading.HardwareBrightnessOk != true)
             {
@@ -625,8 +681,8 @@ public sealed class ControlHandler
         return BuildResult(applied, failures);
     }
 
-    /// <summary>同步等待一次硬件亮度读数。</summary>
-    private static DisplayMessage ReadHardwareBrightnessBlocking(DisplayTarget target)
+    /// <summary>异步等待一次硬件亮度读数。</summary>
+    private static async Task<DisplayMessage> ReadHardwareBrightnessAsync(DisplayTarget target, TimeSpan timeout)
     {
         DisplayService? service = DisplayBus.Service;
         if (service is null)
@@ -640,14 +696,12 @@ public sealed class ControlHandler
             };
         }
 
-        var done = new ManualResetEventSlim(false);
-        DisplayMessage? received = null;
+        var tcs = new TaskCompletionSource<DisplayMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         void OnRead(DisplayMessage message)
         {
             if (!string.Equals(message.Id, target.Id, StringComparison.OrdinalIgnoreCase)) return;
-            received = message;
-            done.Set();
+            tcs.TrySetResult(message);
         }
 
         service.HardwareBrightnessRead += OnRead;
@@ -656,7 +710,11 @@ public sealed class ControlHandler
         {
             DisplayBus.ReadHardwareBrightness(target.Id);
 
-            if (!done.Wait(TimeSpan.FromSeconds(15)))
+            try
+            {
+                return await tcs.Task.WaitAsync(timeout).ConfigureAwait(true);
+            }
+            catch (TimeoutException)
             {
                 return new DisplayMessage
                 {
@@ -666,19 +724,10 @@ public sealed class ControlHandler
                     HardwareBrightnessError = "读取硬件亮度超时",
                 };
             }
-
-            return received ?? new DisplayMessage
-            {
-                Type = "brightness",
-                Id = target.Id,
-                HardwareBrightnessOk = false,
-                HardwareBrightnessError = "没有收到结果",
-            };
         }
         finally
         {
             service.HardwareBrightnessRead -= OnRead;
-            done.Dispose();
         }
     }
 

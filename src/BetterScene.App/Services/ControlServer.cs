@@ -63,7 +63,7 @@ public sealed class ControlServer : IDisposable
                     PipeDirection.InOut,
                     1,
                     PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
                 await server.WaitForConnectionAsync(token).ConfigureAwait(false);
 
@@ -247,6 +247,8 @@ public sealed class ControlServer : IDisposable
         {
         }
 
+        // 不立即 Dispose:后台 LoopAsync 仍在用这个 token,提前释放会让它的
+        // CancellationToken.Register 抛 ObjectDisposedException。进程退出会回收。
         _cts = null;
         Log.Info("control server stopped");
     }

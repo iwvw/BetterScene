@@ -40,6 +40,7 @@ public sealed class TrayIconService
     public event Action? LightRequested;
     public event Action? DarkRequested;
     public event Action? ToggleSceneRequested;
+    public event Action? AutoSceneToggleRequested;
 
     public void Show(bool visible)
     {
@@ -61,6 +62,9 @@ public sealed class TrayIconService
 
         _currentIcon?.Dispose();
         _currentIcon = null;
+
+        try { _icon?.Dispose(); } catch { }
+        _icon = null;
     }
 
     public void ApplyTheme(ElementTheme theme)
@@ -462,6 +466,7 @@ public sealed class TrayIconService
             Wire<MenuFlyoutItem>(menu, "TrayLightItem", () => LightRequested?.Invoke());
             Wire<MenuFlyoutItem>(menu, "TrayDarkItem", () => DarkRequested?.Invoke());
             Wire<MenuFlyoutItem>(menu, "TrayToggleItem", () => ToggleSceneRequested?.Invoke());
+            Wire<MenuFlyoutItem>(menu, "TrayPauseItem", () => AutoSceneToggleRequested?.Invoke());
         }
 
         try

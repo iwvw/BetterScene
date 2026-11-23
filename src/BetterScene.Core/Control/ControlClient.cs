@@ -77,12 +77,24 @@ public static class ControlClient
         writer.WriteLine(JsonSerializer.Serialize(request, ControlProtocol.Json));
 
         Task<string?> pending = reader.ReadLineAsync();
-        if (!pending.Wait(timeoutMs))
+        string? line;
+        try
         {
-            throw new ControlException(ControlErrorCodes.Timeout, "程序没有在超时内返回结果");
-        }
+            if (!pending.Wait(timeoutMs))
+            {
+                throw new ControlException(ControlErrorCodes.Timeout, "程序没有在超时内返回结果");
+            }
 
-        string? line = pending.Result;
+            line = pending.Result;
+        }
+        catch (AggregateException ex)
+        {
+            // 应答任务本身失败(管道被对端关闭等)会被 Wait 包成 AggregateException;
+            // 直接冒泡会变成 Main 的未处理异常,破坏退出码约定。
+            throw new ControlException(
+                ControlErrorCodes.Internal,
+                $"读取应答失败:{ex.InnerException?.Message ?? ex.Message}");
+        }
         if (string.IsNullOrWhiteSpace(line))
         {
             throw new ControlException(ControlErrorCodes.Internal, "程序关闭了连接但没有返回结果");

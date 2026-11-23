@@ -132,7 +132,10 @@ public static class MonitorRules
 
     public static byte Resolve(WorkerSettings settings, string firmwareId)
     {
-        if (settings.BrightnessVcpOverrides.TryGetValue(firmwareId, out int custom) && custom is >= 0x01 and <= 0xFF)
+        // 0x12 是对比度,绝不能作为亮度通道——见 CONTEXT「亮度 VCP 解析」。
+        // 覆盖值放行 0x12 会重新制造「设亮度写进对比度、背光纹丝不动」的静默故障。
+        if (settings.BrightnessVcpOverrides.TryGetValue(firmwareId, out int custom) &&
+            custom is >= 0x01 and <= 0xFF && custom != 0x12)
         {
             return (byte)custom;
         }

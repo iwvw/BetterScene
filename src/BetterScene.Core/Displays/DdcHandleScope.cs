@@ -27,11 +27,11 @@ internal static class DdcHandleScope
         }
 
         // 没有会话句柄：临时取一个，用完释放。
-        IntPtr temporary = IntPtr.Zero;
+        List<PhysicalDescriptor>? physical = null;
         try
         {
             var describer = new NativeDescriber();
-            List<PhysicalDescriptor> physical = describer.Enumerate();
+            physical = describer.Enumerate();
 
             PhysicalDescriptor? item = physical.FirstOrDefault(p =>
                 string.Equals(p.GdiName, target.GdiName, StringComparison.OrdinalIgnoreCase));
@@ -42,20 +42,28 @@ internal static class DdcHandleScope
                 return false;
             }
 
-            temporary = item.Monitor;
-            if (withHandle(temporary)) return true;
+            if (withHandle(item.Monitor)) return true;
 
             error = "设备未响应。";
             return false;
         }
         catch (Exception ex)
         {
+            Log.Warn($"temporary ddc handle for {target.FirmwareId} failed: {ex.Message}");
             error = ex.Message;
             return false;
         }
         finally
         {
-            if (temporary != IntPtr.Zero) NativeDdc.DestroyPhysicalMonitor(temporary);
+            // Enumerate() 会为「所有」物理显示器打开句柄,这些句柄都归本方法所有,
+            // 没用到的那 N-1 个也必须销毁,否则每次都泄漏一批。
+            if (physical is not null)
+            {
+                foreach (PhysicalDescriptor p in physical)
+                {
+                    if (p.Monitor != IntPtr.Zero) NativeDdc.DestroyPhysicalMonitor(p.Monitor);
+                }
+            }
         }
     }
 }

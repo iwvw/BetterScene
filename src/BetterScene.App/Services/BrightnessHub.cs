@@ -66,22 +66,31 @@ public static class BrightnessHub
         target.Backend is DisplayBackend.Ddc or DisplayBackend.Gamma;
 
     /// <summary>该显示器当前是否处于 HDR 模式（结果缓存 2 秒，避免每次滑块都查一遍）。</summary>
-    private static bool IsHdrActive(DisplayTarget target)    {
+    private static bool IsHdrActive(DisplayTarget target)
+    {
         long now = MonoClock.NowMs;
 
-        if (_hdrCacheId == target.Id && MonoClock.Within(_hdrCacheAt, 2000))
+        lock (CacheGate)
         {
-            return _hdrCacheValue;
+            if (_hdrCacheId == target.Id && MonoClock.Within(_hdrCacheAt, 2000))
+            {
+                return _hdrCacheValue;
+            }
         }
 
         bool enabled = HdrControl.Read(target).IsEnabled;
 
-        _hdrCacheId = target.Id;
-        _hdrCacheValue = enabled;
-        _hdrCacheAt = now;
+        lock (CacheGate)
+        {
+            _hdrCacheId = target.Id;
+            _hdrCacheValue = enabled;
+            _hdrCacheAt = now;
+        }
 
         return enabled;
     }
+
+    private static readonly object CacheGate = new();
 
     private static string? _hdrCacheId;
     private static bool _hdrCacheValue;
@@ -90,15 +99,21 @@ public static class BrightnessHub
     /// <summary>HDR 开关变化后调用，让下次读取拿到新状态。</summary>
     public static void InvalidateHdrCache()
     {
-        _hdrCacheId = null;
-        _hdrCacheAt = MonoClock.Never;
+        lock (CacheGate)
+        {
+            _hdrCacheId = null;
+            _hdrCacheAt = MonoClock.Never;
+        }
     }
 
     /// <summary>SDR 白点缓存失效（HDR 切换后必须调用）。</summary>
     public static void InvalidateSdrCache()
     {
-        _sdrCacheId = null;
-        _sdrCacheAt = MonoClock.Never;
+        lock (CacheGate)
+        {
+            _sdrCacheId = null;
+            _sdrCacheAt = MonoClock.Never;
+        }
     }
 
     /// <summary>底层管道写入器，由 DisplayBus 在挂载服务时提供。</summary>
@@ -144,16 +159,22 @@ public static class BrightnessHub
     {
         long now = MonoClock.NowMs;
 
-        if (_sdrCacheId == target.Id && MonoClock.Within(_sdrCacheAt, 800))
+        lock (CacheGate)
         {
-            return _sdrCacheValue;
+            if (_sdrCacheId == target.Id && MonoClock.Within(_sdrCacheAt, 800))
+            {
+                return _sdrCacheValue;
+            }
         }
 
         int value = GammaBrightness.ReadLevel(target.GdiName);
 
-        _sdrCacheId = target.Id;
-        _sdrCacheValue = value;
-        _sdrCacheAt = now;
+        lock (CacheGate)
+        {
+            _sdrCacheId = target.Id;
+            _sdrCacheValue = value;
+            _sdrCacheAt = now;
+        }
 
         return value;
     }
@@ -166,9 +187,12 @@ public static class BrightnessHub
     /// </summary>
     private static void PrimeSdrCache(string id, int level)
     {
-        _sdrCacheId = id;
-        _sdrCacheValue = level;
-        _sdrCacheAt = MonoClock.NowMs;
+        lock (CacheGate)
+        {
+            _sdrCacheId = id;
+            _sdrCacheValue = level;
+            _sdrCacheAt = MonoClock.NowMs;
+        }
     }
 
     private static string? _sdrCacheId;
@@ -384,7 +408,7 @@ public static class BrightnessHub
                 ? Math.Clamp(saved, 0, 100)
                 : Math.Clamp(LevelOf(target), 0, 100);
 
-            int requested = Math.Clamp(intent + delta, 0, 100);
+            int requested = RangeOf(target).Clamp(intent + delta);
             int applied = ClampToChannel(target, requested);
 
             App.Settings.Brightness[target.Id] = requested;
@@ -422,15 +446,14 @@ public static class BrightnessHub
         List<DisplayTarget> targets = Controllable.ToList();
         if (targets.Count == 0) return false;
 
-        int requested = Math.Clamp(level, 0, 100);
+        int reference = Math.Clamp(level, 0, 100);
 
         // 每台屏的通道能力可能不同（外接屏 HDR 下走 gamma、内屏走 WMI），
         // 所以不能统一夹一次，要逐台算。
         // 设置里存意图值，硬件收夹取后的值。
-        int reference = requested;
-
         foreach (DisplayTarget target in targets)
         {
+            int requested = RangeOf(target).Clamp(level);
             int applied = ClampToChannel(target, requested);
             App.Settings.Brightness[target.Id] = requested;
 

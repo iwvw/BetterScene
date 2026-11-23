@@ -684,6 +684,10 @@ public sealed partial class FlyoutWindow : Window
     {
         if (generation != _resizeGeneration) return;
         WindowChrome.PlaceBelowTaskbar(_hwnd);
+
+        // 尺寸修正动画期间上报的新高度会被丢弃(OnLayoutHeightChanged 的 IsRunning 分支);
+        // 动画结束后用最新高度补一次,避免面板停在旧高度把内容裁掉。
+        if (_wantVisible && _contentHeightDip > 0) ApplyContentSize(_contentHeightDip);
     }
 
     private void OnDragStarted()
@@ -733,6 +737,9 @@ public sealed partial class FlyoutWindow : Window
         _slider.Animate(SlideMath.Hidden(current, SlideDirection.BottomUp),
             AnimationSettings.Scale(HideDurationMs), easeIn: true, () =>
         {
+            // 动画已跑完、回调排队的瞬间用户又点开了面板:不能把新显示的面板收起销毁。
+            if (_wantVisible) return;
+
             _appWindow.Hide();
             _windowShown = false;
             _targetRect = ComputeTargetRect();

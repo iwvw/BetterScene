@@ -112,7 +112,9 @@ public static class AutoSwitch
             if (!rule.Enabled) continue;
             if (rule.Kind is SceneRuleKind.NightLightOn or SceneRuleKind.NightLightOff) continue;
 
-            for (int dayOffset = 0; dayOffset >= -1; dayOffset--)
+            // 回看要覆盖最长的「非规则日期空档」:只勾工作日时,周一凌晨
+            // 上一次真正生效的是上周五,需要回看 3 天;自定义掩码最坏 7 天。
+            for (int dayOffset = 0; dayOffset >= -7; dayOffset--)
             {
                 DateTime date = now.Date.AddDays(dayOffset);
                 if (!MatchesDay(rule, date)) continue;
@@ -206,6 +208,12 @@ public static class AutoSwitch
         if (!int.TryParse(parts[0], out int hours) || hours is < 0 or > 23) return null;
         if (!int.TryParse(parts[1], out int minutes) || minutes is < 0 or > 59) return null;
 
+        if (parts.Length == 3)
+        {
+            if (!int.TryParse(parts[2], out int seconds) || seconds is < 0 or > 59) return null;
+            return new TimeSpan(hours, minutes, seconds);
+        }
+
         return new TimeSpan(hours, minutes, 0);
     }
 
@@ -278,7 +286,7 @@ public static class SolarTimes
         moment = default;
 
         if (double.IsNaN(latitude) || double.IsNaN(longitude)) return false;
-        if (Math.Abs(latitude) > 66.5) return false; // 极昼极夜，直接放弃
+        // 纬度硬截断已移除:极昼极夜由下面的 cosHa 越界判定处理。
 
         int dayOfYear = date.DayOfYear;
 
@@ -312,7 +320,8 @@ public static class SolarTimes
 
         // minutesUtc 是 UTC 分钟数，转本地时间要「加上」时区偏移。
         // 原来写成减去偏移，等于把偏移算了两遍：日落 17:45 会变成 01:45。
-        moment = date.Date.AddMinutes(minutesUtc + TimeZoneInfo.Local.GetUtcOffset(date).TotalMinutes);
+        DateTime utc = DateTime.SpecifyKind(date.Date, DateTimeKind.Utc).AddMinutes(minutesUtc);
+        moment = TimeZoneInfo.ConvertTimeFromUtc(utc, TimeZoneInfo.Local);
         return true;
     }
 }

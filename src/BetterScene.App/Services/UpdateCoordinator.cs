@@ -79,9 +79,16 @@ public sealed class UpdateCoordinator : IDisposable
 
             if (!manual && !settings.AutoCheckUpdate) return;
 
-            UpdateInfo info = await UpdateService
-                .CheckAsync(settings.GitHubAccelerator)
+            (UpdateInfo info, bool checkOk) = await UpdateService
+                .TryCheckAsync(settings.GitHubAccelerator)
                 .ConfigureAwait(false);
+
+            if (!checkOk)
+            {
+                Log.Warn("update check failed (network/mirrors), keeping last check time");
+                if (manual) App.Ui?.TryEnqueue(() => CheckFailed?.Invoke("检查更新失败"));
+                return;
+            }
 
             // 无论有没有新版本，都记下检查时间，避免频繁打 GitHub API。
             MarkChecked();

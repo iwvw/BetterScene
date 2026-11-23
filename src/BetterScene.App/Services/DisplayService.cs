@@ -118,8 +118,17 @@ public sealed class DisplayService : IDisposable
         try
         {
             var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await client.ConnectAsync(timeout.Token).ConfigureAwait(false);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await client.ConnectAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 连接/超时失败路径也要释放,否则每次失败都漏一个管道句柄。
+                client.Dispose();
+                throw;
+            }
 
             if (_disposed)
             {
@@ -130,6 +139,9 @@ public sealed class DisplayService : IDisposable
             _client = client;
             _writer = new StreamWriter(client, new UTF8Encoding(false)) { AutoFlush = true };
             Log.Info("displays pipe connected");
+
+            // 连接建立前设置的刷新间隔会被 Send 丢弃,这里补发一次。
+            if (_pendingIntervalMs is { } interval) Send(new { type = "set-interval", value = interval });
 
             using var reader = new StreamReader(client, Encoding.UTF8);
             while (!_disposed)
@@ -149,6 +161,7 @@ public sealed class DisplayService : IDisposable
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException)
         {
+            Log.Debug($"displays pipe closed: {ex.GetType().Name} {ex.Message}");
         }
         catch (Exception ex)
         {
@@ -194,7 +207,13 @@ public sealed class DisplayService : IDisposable
 
     public void FlushBrightness() => Send(new { type = "flush" });
 
-    public void SetInterval(int value) => Send(new { type = "set-interval", value });
+    public void SetInterval(int value)
+    {
+        _pendingIntervalMs = value;
+        Send(new { type = "set-interval", value });
+    }
+
+    private int? _pendingIntervalMs;
 
     private void Send(object payload)
     {
@@ -358,6 +377,7 @@ public sealed class DisplayService : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
         _watchdog?.Dispose();
         _watchdog = null;

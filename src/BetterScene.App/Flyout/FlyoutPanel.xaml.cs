@@ -54,6 +54,16 @@ public sealed partial class FlyoutPanel : UserControl
     private void OnAnyPointerReleased(object sender, PointerRoutedEventArgs e)
     {
         if (_pointerHeld > 0) _pointerHeld--;
+
+        // 指针在窗口外抬起时收不到 PointerReleased(未捕获前),
+        // 这里兜底清掉「已武装但从未真正开始拖动」的状态,
+        // 否则 IsBusy 会一直为真,自动收起永久失效。
+        if (!_dragActive)
+        {
+            _dragArmed = false;
+            _dragPointerId = null;
+        }
+
         InteractionEnded?.Invoke();
     }
 
@@ -71,6 +81,13 @@ public sealed partial class FlyoutPanel : UserControl
             return;
         }
 
+        if (_openPopups > 0) _openPopups--;
+        InteractionEnded?.Invoke();
+    }
+
+    private void OnAutoModeMenuClosed(object? sender, object e)
+    {
+        if (sender is MenuFlyout menu) menu.Closed -= OnAutoModeMenuClosed;
         if (_openPopups > 0) _openPopups--;
         InteractionEnded?.Invoke();
     }
@@ -501,7 +518,9 @@ public sealed partial class FlyoutPanel : UserControl
 
         foreach (string id in _items.Keys.ToList())
         {
-            if (!alive.Contains(id)) _items.Remove(id);
+            if (alive.Contains(id)) continue;
+
+            if (_items.Remove(id, out DisplaySliderItem? removed)) removed.Dispose();
         }
 
         // 组卡片固定在第一位，关联关闭时折叠隐藏。
@@ -545,6 +564,7 @@ public sealed partial class FlyoutPanel : UserControl
             if (ReferenceEquals(item, _group)) continue;
             if (_items.ContainsKey(item.Id)) continue;
 
+            item.Dispose();
             Displays.RemoveAt(i);
         }
 
@@ -700,6 +720,11 @@ public sealed partial class FlyoutPanel : UserControl
         // 右键或点击时展开模式菜单；直接点击在「关闭/上次使用的模式」之间切换。
         if (AutoButton.ContextFlyout is MenuFlyout menu)
         {
+            menu.Closed -= OnAutoModeMenuClosed;
+            menu.Closed += OnAutoModeMenuClosed;
+            _openPopups++;
+            AutoHideBlocked?.Invoke();
+
             menu.ShowAt(AutoButton);
             AutoButton.IsChecked = App.Settings.AutoSwitch.ParsedMode != AutoSwitchMode.Off;
             return;

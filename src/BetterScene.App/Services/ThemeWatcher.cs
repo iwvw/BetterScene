@@ -9,9 +9,11 @@ public sealed class ThemeWatcher : IDisposable
     private const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
     private readonly object _gate = new();
+    private readonly ManualResetEventSlim _wake = new(false);
+    private Thread? _thread;
     private SystemTheme _last = ThemeSwitcher.Current;
     private bool _enabled;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public event Action<SystemTheme>? ThemeChanged;
 
@@ -23,26 +25,42 @@ public sealed class ThemeWatcher : IDisposable
 
         lock (_gate)
         {
-            if (_enabled) return;
-            _enabled = true;
-            _last = ThemeSwitcher.Current;
+            if (!_enabled)
+            {
+                _enabled = true;
+                _last = ThemeSwitcher.Current;
+            }
+
+            // 只起一个常驻循环:反复 Start/Stop 不能累积线程。
+            if (_thread is null)
+            {
+                _thread = new Thread(WatchLoop)
+                {
+                    IsBackground = true,
+                    Name = "BetterScene.ThemeWatcher",
+                };
+                _thread.Start();
+            }
         }
 
-        _ = Task.Run(WatchLoop);
+        _wake.Set();
     }
 
     public void Stop()
     {
         lock (_gate) _enabled = false;
+        _wake.Set();
     }
 
-    private async Task WatchLoop()
+    private void WatchLoop()
     {
         while (!_disposed)
         {
+            _wake.Wait(2000);
+            _wake.Reset();
+
             try
             {
-                await Task.Delay(2000).ConfigureAwait(false);
                 if (!_enabled) continue;
 
                 SystemTheme current = ThemeSwitcher.Current;
@@ -74,7 +92,19 @@ public sealed class ThemeWatcher : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
         _enabled = false;
+
+        try
+        {
+            _wake.Set();
+            _thread?.Join(600);
+        }
+        catch
+        {
+        }
+
+        _thread = null;
     }
 }

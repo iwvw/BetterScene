@@ -95,7 +95,21 @@ public static class DisplayControlCache
     public static DisplayControls Set(string id, DisplayControls controls)
     {
         if (string.IsNullOrEmpty(id)) return controls;
-        if (controls.Items.Count == 0) return controls;
+        if (controls.Items.Count == 0)
+        {
+            // 整次读到空(显示器忙/休眠)时不要用空清单覆盖界面:
+            // 有缓存就返回缓存,没有缓存才返回空。
+            lock (Gate)
+            {
+                Load();
+                if (Map.TryGetValue(id, out CachedControls? cached) && cached.Controls is { Items.Count: > 0 } previous)
+                {
+                    return previous;
+                }
+            }
+
+            return controls;
+        }
 
         DisplayControls result;
 

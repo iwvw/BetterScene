@@ -317,7 +317,14 @@ public sealed partial class SettingsPage : Page
             UpdateStatusText.Text = "正在检查…";
             UpdateActionButton.Content = "检查更新";
 
-            UpdateInfo info = await UpdateService.CheckAsync(App.Settings.GitHubAccelerator);
+            (UpdateInfo info, bool ok) = await UpdateService.TryCheckAsync(App.Settings.GitHubAccelerator);
+            if (!ok)
+            {
+                UpdateStatusText.Text = "检查失败(网络或镜像不可用)";
+                UpdateActionButton.Content = "重试";
+                return;
+            }
+
             _pendingUpdate = info;
             App.Main?.SyncUpdateBadge(info);
 
@@ -367,7 +374,9 @@ public sealed partial class SettingsPage : Page
     {
         try
         {
-            UpdateInfo info = await UpdateService.CheckAsync(App.Settings.GitHubAccelerator);
+            (UpdateInfo info, bool ok) = await UpdateService.TryCheckAsync(App.Settings.GitHubAccelerator);
+            if (!ok) return;
+
             _pendingUpdate = info;
             App.Main?.SyncUpdateBadge(info);
 

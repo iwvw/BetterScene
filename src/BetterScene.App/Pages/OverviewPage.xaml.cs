@@ -50,18 +50,41 @@ public sealed partial class OverviewPage : Page, IPageLifecycle
     public void DetachFromHost() => Detach();
 
     private bool _attached;
+    private DisplayService? _serviceSubscribed;
+    private bool _autoSceneSubscribed;
 
     /// <summary>订阅全局事件。幂等：<see cref="OnNavigatedTo"/> 与恢复导航都可能进入。</summary>
     private void Attach()
     {
-        if (_attached) return;
-        _attached = true;
+        if (!_attached)
+        {
+            _attached = true;
+            DisplayBus.Changed += OnDisplaysChanged;
+            BrightnessHub.Changed += OnBrightnessChanged;
+        }
 
-        DisplayBus.Changed += OnDisplaysChanged;
-        BrightnessHub.Changed += OnBrightnessChanged;
+        // 首屏导航可能早于 DisplayService / AutoSceneService 创建,
+        // 这里按「当前实例」补订阅,后续服务就绪时由 OnDisplaysChanged 再调一次。
+        SubscribeService();
+    }
 
-        if (App.AutoScene is not null) App.AutoScene.StateChanged += OnAutoSceneStateChanged;
-        if (DisplayBus.Service is { } service) service.ControlsRead += OnControlsRead;
+    private void SubscribeService()
+    {
+        if (!_attached) return;
+
+        DisplayService? service = DisplayBus.Service;
+        if (!ReferenceEquals(service, _serviceSubscribed))
+        {
+            if (_serviceSubscribed is not null) _serviceSubscribed.ControlsRead -= OnControlsRead;
+            _serviceSubscribed = service;
+            if (service is not null) service.ControlsRead += OnControlsRead;
+        }
+
+        if (!_autoSceneSubscribed && App.AutoScene is not null)
+        {
+            App.AutoScene.StateChanged += OnAutoSceneStateChanged;
+            _autoSceneSubscribed = true;
+        }
     }
 
     /// <summary>退订全局事件。幂等：<see cref="OnNavigatedFrom"/> 与 <see cref="DetachFromHost"/> 都可能进入。</summary>
@@ -73,8 +96,17 @@ public sealed partial class OverviewPage : Page, IPageLifecycle
         DisplayBus.Changed -= OnDisplaysChanged;
         BrightnessHub.Changed -= OnBrightnessChanged;
 
-        if (App.AutoScene is not null) App.AutoScene.StateChanged -= OnAutoSceneStateChanged;
-        if (DisplayBus.Service is { } service) service.ControlsRead -= OnControlsRead;
+        if (_autoSceneSubscribed && App.AutoScene is not null)
+        {
+            App.AutoScene.StateChanged -= OnAutoSceneStateChanged;
+            _autoSceneSubscribed = false;
+        }
+
+        if (_serviceSubscribed is not null)
+        {
+            _serviceSubscribed.ControlsRead -= OnControlsRead;
+            _serviceSubscribed = null;
+        }
     }
 
     /// <summary>为还没有扩展项数据的显示器请求一次（对比度/音量/色温…）。</summary>
@@ -121,7 +153,13 @@ public sealed partial class OverviewPage : Page, IPageLifecycle
         });
     }
 
-    private void OnDisplaysChanged() => _ = DispatcherQueue.TryEnqueue(Refresh);
+    private void OnDisplaysChanged() => _ = DispatcherQueue.TryEnqueue(() =>
+    {
+        // 显示器列表变化(含首次枚举)后:补订阅可能刚就绪的服务,并为新屏补读扩展项。
+        SubscribeService();
+        Refresh();
+        RequestExtras();
+    });
 
     /// <summary>
     /// 亮度变化只影响滑块，不需要重建整页。
@@ -225,7 +263,10 @@ public sealed partial class OverviewPage : Page, IPageLifecycle
 
         foreach (string id in _items.Keys.Where(k => !seen.Contains(k)).ToList())
         {
-            _items.Remove(id);
+            if (_items.Remove(id, out DisplaySliderItem? removed))
+            {
+                removed.Dispose();
+            }
 
             if (_hosts.Remove(id, out Controls.SettingsExpanderHost? host))
             {

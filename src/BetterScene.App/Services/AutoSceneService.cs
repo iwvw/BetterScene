@@ -104,8 +104,8 @@ public sealed class AutoSceneService : IDisposable
                 Log.Info("auto switch resumed");
             }
 
-            _lastApplied = desired;
             SceneRequested?.Invoke(desired.Value);
+            _lastApplied = desired;
             StateChanged?.Invoke();
         }
         catch (Exception ex)
@@ -128,14 +128,16 @@ public sealed class AutoSceneService : IDisposable
         AutoSwitchSettings auto = App.Settings.AutoSwitch;
 
         // 电池优先：插电与否是明确的状态，不需要和规则竞争。
-        if (AutoSwitchConditions2.ShouldForceDarkOnBattery(auto.Conditions))
+        if (App.Settings.AutoScene && AutoSwitchConditions2.ShouldForceDarkOnBattery(auto.Conditions))
         {
             return SystemTheme.Dark;
         }
 
         return auto.ParsedMode switch
         {
-            AutoSwitchMode.Schedule => AutoSwitch.ActiveRule(auto, DateTime.Now)?.Scene,
+            AutoSwitchMode.Schedule => App.Settings.AutoScene
+                ? AutoSwitch.ActiveRule(auto, DateTime.Now)?.Scene
+                : null,
             AutoSwitchMode.FollowSystem => App.Settings.AutoScene ? ThemeSwitcher.Current : null,
             _ => null,
         };
@@ -146,7 +148,7 @@ public sealed class AutoSceneService : IDisposable
     {
         AutoSwitchSettings auto = App.Settings.AutoSwitch;
 
-        if (auto.Conditions.DarkOnBattery && PowerStatus.OnBattery)
+        if (App.Settings.AutoScene && auto.Conditions.DarkOnBattery && PowerStatus.OnBattery)
         {
             return "电池供电 · 深色";
         }

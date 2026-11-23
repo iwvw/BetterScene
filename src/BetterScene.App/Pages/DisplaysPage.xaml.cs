@@ -50,17 +50,38 @@ public sealed partial class DisplaysPage : Page, IPageLifecycle
     public void DetachFromHost() => Detach();
 
     private bool _attached;
+    private DisplayService? _serviceSubscribed;
 
     /// <summary>订阅全局事件。幂等：<see cref="OnNavigatedTo"/> 与恢复导航都可能进入。</summary>
     private void Attach()
     {
-        if (_attached) return;
-        _attached = true;
+        if (!_attached)
+        {
+            _attached = true;
+            DisplayBus.Changed += OnDisplaysChanged;
+        }
 
-        DisplayBus.Changed += OnDisplaysChanged;
+        SubscribeService();
 
         // 能力探测与控制项读取都是异步回来的。
-        if (DisplayBus.Service is { } service)
+    }
+
+    private void SubscribeService()
+    {
+        if (!_attached) return;
+
+        DisplayService? service = DisplayBus.Service;
+        if (ReferenceEquals(service, _serviceSubscribed)) return;
+
+        if (_serviceSubscribed is not null)
+        {
+            _serviceSubscribed.CapabilitiesProbed -= OnCapabilitiesProbed;
+            _serviceSubscribed.ControlsRead -= OnControlsRead;
+            _serviceSubscribed.ControlWritten -= OnControlWritten;
+        }
+
+        _serviceSubscribed = service;
+        if (service is not null)
         {
             service.CapabilitiesProbed += OnCapabilitiesProbed;
             service.ControlsRead += OnControlsRead;
@@ -76,13 +97,15 @@ public sealed partial class DisplaysPage : Page, IPageLifecycle
 
         DisplayBus.Changed -= OnDisplaysChanged;
 
-        if (DisplayBus.Service is { } service)
+        if (_serviceSubscribed is not null)
         {
-            service.CapabilitiesProbed -= OnCapabilitiesProbed;
-            service.ControlsRead -= OnControlsRead;
-            service.ControlWritten -= OnControlWritten;
+            _serviceSubscribed.CapabilitiesProbed -= OnCapabilitiesProbed;
+            _serviceSubscribed.ControlsRead -= OnControlsRead;
+            _serviceSubscribed.ControlWritten -= OnControlWritten;
+            _serviceSubscribed = null;
         }
 
+        try { _probeDialog?.Hide(); } catch { }
         _probeDialog = null;
         _probePanel = null;
         _probeDisplayId = null;
@@ -90,7 +113,11 @@ public sealed partial class DisplaysPage : Page, IPageLifecycle
 
     private void OnDisplaysChanged()
     {
-        _ = DispatcherQueue.TryEnqueue(() => Rebuild(DisplayBus.Current));
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            SubscribeService();
+            Rebuild(DisplayBus.Current);
+        });
     }
 
     private void Rebuild(List<DisplayTarget> targets)
@@ -114,6 +141,7 @@ public sealed partial class DisplaysPage : Page, IPageLifecycle
         {
             DisplaySliderItem item = _items[id];
             _items.Remove(id);
+            item.Dispose();
             Displays.Remove(item);
         }
 
@@ -375,7 +403,8 @@ public sealed partial class DisplaysPage : Page, IPageLifecycle
     private void WriteControl(byte code, uint value)
     {
         if (_probeDisplayId is null) return;
-        DisplayBus.WriteControl(_probeDisplayId, code, value);
+        // 用 sync 版本:结果会经 ControlWritten 回来,才能触发 OnWriteResult 的失败回退。
+        DisplayBus.WriteControlSync(_probeDisplayId, code, value);
     }
 
 

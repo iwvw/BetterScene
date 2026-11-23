@@ -2,15 +2,16 @@ using System.Text.Json;
 
 namespace BetterScene.Core.Displays;
 
-public sealed class DisplayWorker
+public sealed class DisplayWorker : IDisposable
 {
     private readonly WorkerSettings _settings;
     private readonly DdcSession _session = new();
     private readonly ControlWriteQueue _controlQueue;
     private readonly Dictionary<string, DisplayTarget> _targets = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
-    private readonly object _io = new();
-    private readonly object _writeQueue = new();
+    // 所有 DDC 访问(枚举、读写、会话句柄)都由这一把锁串行化,
+    // 满足 CONTEXT 硬约束「DDC 调用在 Displays 进程内也是串行队列」。
+    private readonly object _ddcLock = new();
     private bool _wmiUsable;
     private bool _wmiProbed;
     private string? _cachedCrash;
@@ -18,6 +19,10 @@ public sealed class DisplayWorker
     private List<DisplayTarget> _lastGood = new();
     private readonly AccessHealth _health = new();
     private DdcUnstableState _unstable = new();
+
+    // DDC 入口获取串行锁的最长等待。超时说明有 DDC 调用卡死,
+    // 此时直接失败返回,而不是让整个 worker 无限期阻塞。
+    private const int DdcGateTimeoutMs = 10000;
 
     public DisplayWorker(WorkerSettings settings)
     {
@@ -35,33 +40,64 @@ public sealed class DisplayWorker
         }
     }
 
+    /// <summary>释放 DDC 会话句柄与控制项写入队列。</summary>
+    public void Dispose()
+    {
+        _controlQueue.Dispose();
+
+        // 尽量等在飞的 DDC 调用结束再销毁句柄,避免正在被使用的句柄被释放;
+        // 拿不到锁(有卡死线程)时干脆不释放,交给进程退出回收,好过 use-after-free。
+        if (Monitor.TryEnter(_ddcLock, 2000))
+        {
+            try { _session.Dispose(); }
+            finally { Monitor.Exit(_ddcLock); }
+        }
+    }
+
     public List<DisplayTarget> Refresh()
     {
         if (_ddcBroken)
         {
-            lock (_io) return Remember(RefreshCore(skipDdc: true));
+            // 降级路径刻意不碰 DDC,也不去等 _ddcLock:一次超时之后,
+            // 那个卡死的线程可能仍持有这把锁,等它就是永久阻塞。
+            try
+            {
+                return Remember(RefreshCore(skipDdc: true));
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"refresh without ddc failed: {ex.Message}");
+                lock (_gate) return _lastGood.Select(Clone).ToList();
+            }
         }
 
         List<DisplayTarget>? result = null;
         Exception? failure = null;
+        var acquiredEvent = new ManualResetEventSlim(false);
 
         var task = Task.Run(() =>
         {
-            try
-            {
-                lock (_io) result = RefreshCore(skipDdc: false);
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-            }
+            // 先单独等锁:拿不到只说明 DDC 忙(别处正在用),不能据此判定卡死。
+            if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs)) return;
+
+            acquiredEvent.Set();
+            try { result = RefreshCore(skipDdc: false); }
+            catch (Exception ex) { failure = ex; }
+            finally { Monitor.Exit(_ddcLock); }
         });
+
+        if (!acquiredEvent.Wait(DdcGateTimeoutMs + 1000))
+        {
+            Log.Warn("refresh skipped: ddc busy");
+            return LastGood();
+        }
 
         // ⚠️ 超时后这个工作线程仍在运行：DDC 的 P/Invoke（GetCapabilitiesStringLength
         // 等）不可取消，没有任何 CancellationToken 能传进去。
         // 这里用 _ddcBroken 一次性永久降级来避免反复超时、反复泄漏线程。
         // 如果将来要支持重试，必须改成进程级隔离（超时直接 Kill 子进程），
         // 否则每次超时都会永久留下一个卡死的线程。
+        // 已拿到锁,才开始按「执行超时」计时(8s):这才是真正可能卡死的 DDC 调用。
         if (task.Wait(TimeSpan.FromSeconds(8)))
         {
             if (failure is not null) throw failure;
@@ -69,13 +105,15 @@ public sealed class DisplayWorker
         }
 
         _ddcBroken = true;
-        Log.Warn("ddc refresh timed out after 8s, keeping last known displays and disabling ddc");
+        Log.Warn("ddc refresh timed out after acquiring lock, disabling ddc");
+        return LastGood();
+    }
 
+    private List<DisplayTarget> LastGood()
+    {
         lock (_gate)
         {
-            return _lastGood.Count > 0
-                ? _lastGood.Select(Clone).ToList()
-                : new List<DisplayTarget>();
+            return _lastGood.Count > 0 ? _lastGood.Select(Clone).ToList() : new List<DisplayTarget>();
         }
     }
 
@@ -114,6 +152,11 @@ public sealed class DisplayWorker
         RefreshRate = source.RefreshRate,
         IsInternal = source.IsInternal,
         Error = source.Error,
+        SerialNumber = source.SerialNumber,
+        ManufactureYear = source.ManufactureYear,
+        PhysicalWidthCm = source.PhysicalWidthCm,
+        PhysicalHeightCm = source.PhysicalHeightCm,
+        MccsVersion = source.MccsVersion,
     };
 
     private List<DisplayTarget> RefreshCore(bool skipDdc)
@@ -125,100 +168,116 @@ public sealed class DisplayWorker
         var devices = CollectDevices();
         var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var fresh = new Dictionary<string, DisplayTarget>(StringComparer.OrdinalIgnoreCase);
+        var adopted = new HashSet<IntPtr>();
 
-        foreach (PhysicalDescriptor item in physical)
+        try
         {
-            string? match = Match(item, configs, devices, claimed);
-            if (match is null)
+            foreach (PhysicalDescriptor item in physical)
             {
-                NativeDdc.DestroyPhysicalMonitor(item.Monitor);
-                // 这里以前是静默跳过，导致"系统有 2 台、程序只认 1 台"很难查。
-                Log.Warn($"display {item.GdiName} ({item.Description}) could not be matched to a device instance, " +
-                         $"skipping (configs={configs.Count} devices={devices.Count} claimed={claimed.Count})");
-                continue;
-            }
-
-            claimed.Add(match);
-            string firmware = NativeDescriber.FirmwareOf(match);
-            EdidInfo? edid = EdidReader.TryRead(match);
-            DisplayConfigEntry? config = MatchConfig(configs, match, item.GdiName);
-
-            string description = item.Description;
-            if (string.IsNullOrWhiteSpace(description) || description.Contains("Generic", StringComparison.OrdinalIgnoreCase))
-            {
-                description = EdidReader.Describe(firmware, edid);
-            }
-
-            var target = new DisplayTarget
-            {
-                Id = match,
-                GdiName = item.GdiName,
-                Description = description,
-                IsPrimary = item.Primary,
-                Left = item.Bounds.Left,
-                Top = item.Bounds.Top,
-                Width = item.Bounds.Right - item.Bounds.Left,
-                Height = item.Bounds.Bottom - item.Bounds.Top,
-                FirmwareId = firmware,
-                // 型号优先取 EDID 的 0xFC，其次 0xFE 的产品名
-                // （很多笔记本内屏没有 0xFC，型号只写在 0xFE 里）。
-                Model = string.IsNullOrWhiteSpace(edid?.Name)
-                    ? edid?.ProductName ?? string.Empty
-                    : edid!.Name,
-                Vendor = EdidReader.BrandOf(firmware),
-                FriendlyName = config?.DisplayName ?? string.Empty,
-                Connection = config?.Connection ?? string.Empty,
-                RefreshRate = config?.RefreshRate ?? 0,
-                IsInternal = config?.IsInternal ?? false,
-                SerialNumber = edid?.Serial ?? string.Empty,
-                ManufactureYear = edid?.Year ?? 0,
-                PhysicalWidthCm = edid?.WidthCm ?? 0,
-                PhysicalHeightCm = edid?.HeightCm ?? 0,
-            };
-
-            if (skipDdc)
-            {
-                NativeDdc.DestroyPhysicalMonitor(item.Monitor);
-                target.Backend = DisplayBackend.None;
-                target.Status = DisplayStatus.Unsupported;
-                fresh[match] = target;
-                continue;
-            }
-
-            bool trusted = !_unstable.IsMonitorAffected(match);
-
-            bool reused = _session.TryGet(match, out IntPtr existing) && DdcOperations.Probe(existing);
-            if (reused)
-            {
-                NativeDdc.DestroyPhysicalMonitor(item.Monitor);
-                target.Backend = DisplayBackend.Ddc;
-                target.Status = DisplayStatus.Ready;
-                target.Brightness = _targets.TryGetValue(match, out DisplayTarget? prev) ? prev.Brightness : 0;
-                ReadDdc(target, existing, accurate: trusted && _cachedCrash is null && firmware != "DEL41D9");
-            }
-            else
-            {
-                _session.Release(match);
-                if (ProbeWithRetry(item.Monitor))
+                string? match = Match(item, configs, devices, claimed);
+                if (match is null)
                 {
-                    _session.Adopt(match, item.Monitor);
+                    // 这里以前是静默跳过，导致"系统有 2 台、程序只认 1 台"很难查。
+                    Log.Warn($"display {item.GdiName} ({item.Description}) could not be matched to a device instance, " +
+                             $"skipping (configs={configs.Count} devices={devices.Count} claimed={claimed.Count})");
+                    continue;
+                }
+
+                claimed.Add(match);
+                string firmware = NativeDescriber.FirmwareOf(match);
+                EdidInfo? edid = EdidReader.TryRead(match);
+                DisplayConfigEntry? config = MatchConfig(configs, match, item.GdiName);
+
+                string description = item.Description;
+                if (string.IsNullOrWhiteSpace(description) || description.Contains("Generic", StringComparison.OrdinalIgnoreCase))
+                {
+                    description = EdidReader.Describe(firmware, edid);
+                }
+
+                var target = new DisplayTarget
+                {
+                    Id = match,
+                    GdiName = item.GdiName,
+                    Description = description,
+                    IsPrimary = item.Primary,
+                    Left = item.Bounds.Left,
+                    Top = item.Bounds.Top,
+                    Width = item.Bounds.Right - item.Bounds.Left,
+                    Height = item.Bounds.Bottom - item.Bounds.Top,
+                    FirmwareId = firmware,
+                    // 型号优先取 EDID 的 0xFC，其次 0xFE 的产品名
+                    // （很多笔记本内屏没有 0xFC，型号只写在 0xFE 里）。
+                    Model = string.IsNullOrWhiteSpace(edid?.Name)
+                        ? edid?.ProductName ?? string.Empty
+                        : edid!.Name,
+                    Vendor = EdidReader.BrandOf(firmware),
+                    FriendlyName = config?.DisplayName ?? string.Empty,
+                    Connection = config?.Connection ?? string.Empty,
+                    RefreshRate = config?.RefreshRate ?? 0,
+                    IsInternal = config?.IsInternal ?? false,
+                    SerialNumber = edid?.Serial ?? string.Empty,
+                    ManufactureYear = edid?.Year ?? 0,
+                    PhysicalWidthCm = edid?.WidthCm ?? 0,
+                    PhysicalHeightCm = edid?.HeightCm ?? 0,
+                };
+
+                if (skipDdc)
+                {
+                    target.Backend = DisplayBackend.None;
+                    target.Status = DisplayStatus.Unsupported;
+                    fresh[match] = target;
+                    continue;
+                }
+
+                bool trusted = !_unstable.IsMonitorAffected(match);
+                bool skipAccurate = MonitorRules.SkipReapply.Contains(firmware) || _settings.SkipReapply.Contains(firmware);
+                bool accurate = trusted && _cachedCrash is null && !skipAccurate;
+
+                bool reused = _session.TryGet(match, out IntPtr existing) && DdcOperations.Probe(existing);
+                if (reused)
+                {
                     target.Backend = DisplayBackend.Ddc;
                     target.Status = DisplayStatus.Ready;
-                    ReadDdc(target, item.Monitor, accurate: trusted && _cachedCrash is null && firmware != "DEL41D9");
+                    target.Brightness = _targets.TryGetValue(match, out DisplayTarget? prev) ? prev.Brightness : 0;
+                    ReadDdc(target, existing, accurate);
                 }
                 else
                 {
-                    NativeDdc.DestroyPhysicalMonitor(item.Monitor);
-                    target.Status = DisplayStatus.Unsupported;
-                    target.Backend = DisplayBackend.None;
-                    target.Error = "ddc-probe";
+                    _session.Release(match);
+                    if (ProbeWithRetry(item.Monitor))
+                    {
+                        _session.Adopt(match, item.Monitor);
+                        adopted.Add(item.Monitor);
+                        target.Backend = DisplayBackend.Ddc;
+                        target.Status = DisplayStatus.Ready;
+                        ReadDdc(target, item.Monitor, accurate);
+                    }
+                    else
+                    {
+                        target.Status = DisplayStatus.Unsupported;
+                        target.Backend = DisplayBackend.None;
+                        target.Error = "ddc-probe";
+                    }
+                }
+
+                fresh[match] = target;
+            }
+        }
+        finally
+        {
+            // 循环中途抛异常时,尚未交给 _session 的物理监视器句柄也必须销毁,
+            // 否则每次插拔/刷新失败都会泄漏一批原生句柄。
+            foreach (IntPtr handle in physical.Select(p => p.Monitor))
+            {
+                if (handle != IntPtr.Zero && !adopted.Contains(handle))
+                {
+                    NativeDdc.DestroyPhysicalMonitor(handle);
                 }
             }
 
-            fresh[match] = target;
+            // 已消失显示器的会话句柄也一并收掉(异常路径同样要走到这里)。
+            if (!skipDdc) _session.ReleaseAllExcept(claimed);
         }
-
-        _session.ReleaseAllExcept(claimed);
 
         if (fresh.Count == 0 && configs.Count > 0)
         {
@@ -465,6 +524,31 @@ public sealed class DisplayWorker
 
     private DisplayMessage ReadDdcBrightness(DisplayTarget target)
     {
+        if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs))
+        {
+            return new DisplayMessage
+            {
+                Type = "brightness",
+                Id = target.Id,
+                Backend = "ddc",
+                Vcp = target.BrightnessVcp,
+                HardwareBrightnessOk = false,
+                HardwareBrightnessError = "DDC 通道繁忙,请稍后重试。",
+            };
+        }
+
+        try
+        {
+            return ReadDdcBrightnessCore(target);
+        }
+        finally
+        {
+            Monitor.Exit(_ddcLock);
+        }
+    }
+
+    private DisplayMessage ReadDdcBrightnessCore(DisplayTarget target)
+    {
         if (!_session.TryGet(target.Id, out IntPtr handle))
         {
             return new DisplayMessage
@@ -481,6 +565,9 @@ public sealed class DisplayWorker
         // 高电平亮度（部分面板把背光放在非标准位置，值是 0–max 的原始刻度）。
         if (target.UseHighLevelBrightness)
         {
+            DdcSentinel.Begin("read-brightness", target.Id);
+            try
+            {
             if (!DdcOperations.GetHighLevel(handle, out uint min, out uint current, out uint max, out int hlError))
             {
                 return new DisplayMessage
@@ -505,6 +592,11 @@ public sealed class DisplayWorker
                 RawValue = (int)current,
                 RawMaximum = (int)max,
             };
+            }
+            finally
+            {
+                DdcSentinel.End();
+            }
         }
 
         DdcSentinel.Begin("read-brightness", target.Id);
@@ -589,28 +681,39 @@ public sealed class DisplayWorker
     {
         if (_ddcBroken)
         {
-            lock (_io) return SetBrightnessCore(id, percent);
+            // DDC 已判定不可用:只走非 DDC 通道,不再去碰 _ddcLock
+            // (它可能被某个卡死的 DDC 线程占用)。这样降级后 WMI/Gamma 仍可写。
+            bool fallback = SetBrightnessCore(id, percent);
+            if (!fallback) Log.Warn($"set brightness {percent}% failed for {id}");
+            return fallback;
         }
 
         bool result = false;
         Exception? failure = null;
+        var acquiredEvent = new ManualResetEventSlim(false);
 
         var task = Task.Run(() =>
         {
-            try
-            {
-                lock (_writeQueue) result = SetBrightnessCore(id, percent);
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-            }
+            // 先单独等锁:拿不到只说明 DDC 忙,不据此降级。
+            if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs)) return;
+
+            acquiredEvent.Set();
+            try { result = SetBrightnessCore(id, percent); }
+            catch (Exception ex) { failure = ex; }
+            finally { Monitor.Exit(_ddcLock); }
         });
 
+        if (!acquiredEvent.Wait(DdcGateTimeoutMs + 1000))
+        {
+            Log.Warn($"set brightness {percent}% skipped: ddc busy");
+            return false;
+        }
+
         // ⚠️ 与 Refresh 同样的超时策略：DDC 写入的 P/Invoke 不可取消，
-        // 超时后这个 Task 仍会持有 _writeQueue 继续跑完。
-        // 因此这里一次性把 _ddcBroken 置位，后续全部改走 _io 分支，
+        // 超时后这个 Task 仍会持有 _ddcLock 继续跑完。
+        // 因此这里一次性把 _ddcBroken 置位，后续全部改走 _ddcLock 上的分支，
         // 避免在泄漏的锁上排队、也避免反复泄漏线程。
+        // 已拿到锁,才开始按「执行超时」计时(6s)。
         if (task.Wait(TimeSpan.FromSeconds(6)))
         {
             if (failure is not null) throw failure;
@@ -623,7 +726,7 @@ public sealed class DisplayWorker
         }
 
         _ddcBroken = true;
-        Log.Warn($"ddc write timed out after 6s for {id}, disabling ddc for this session");
+        Log.Warn($"ddc write timed out after acquiring lock for {id}, disabling ddc for this session");
         return false;
     }
 
@@ -636,15 +739,19 @@ public sealed class DisplayWorker
         }
 
         int clamped = Math.Clamp(percent, 0, 100);
-        target.Brightness = clamped;
 
         bool ok = target.Backend switch
         {
-            DisplayBackend.Ddc => SetDdcWithHealth(target, clamped),
+            // DDC 已判定不可用时绝不再碰 DDC,否则又会触发一次可能挂死的调用。
+            DisplayBackend.Ddc => _ddcBroken ? false : SetDdcWithHealth(target, clamped),
             DisplayBackend.Wmi => TrySetWmi(target, clamped),
             DisplayBackend.Gamma => GammaBrightness.TrySet(target.GdiName, clamped, out _),
             _ => false,
         };
+
+        // 缓存亮度是「枚举那一刻的快照」,只有真正写成功才更新它,
+        // 否则界面会显示一个并未落地的值(见 ReadHardwareBrightness 的注释)。
+        if (ok) target.Brightness = clamped;
 
         if (!ok)
         {
@@ -742,9 +849,19 @@ public sealed class DisplayWorker
     /// <summary>探测某台显示器支持哪些 VCP 控制项。</summary>
     public DisplayCapabilities ProbeCapabilities(DisplayTarget target)
     {
+        if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs))
+        {
+            return new DisplayCapabilities
+            {
+                DisplayId = target.Id,
+                DisplayTitle = DisplayNaming.Title(target),
+                Error = "DDC 通道繁忙,请稍后重试。",
+            };
+        }
+
         try
         {
-            lock (_io) return CapabilityProbe.Probe(target, _session);
+            return CapabilityProbe.Probe(target, _session);
         }
         catch (Exception ex)
         {
@@ -756,34 +873,57 @@ public sealed class DisplayWorker
                 Error = ex.Message,
             };
         }
+        finally
+        {
+            Monitor.Exit(_ddcLock);
+        }
     }
 
     /// <summary>读取该显示器可调的扩展控制项（对比度、音量、输入源…）。</summary>
     public DisplayControls ReadControls(DisplayTarget target)
     {
+        if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs))
+        {
+            return new DisplayControls { DisplayId = target.Id, Error = "DDC 通道繁忙,请稍后重试。" };
+        }
+
         try
         {
-            lock (_io) return CapabilityProbe.ReadControls(target, _session);
+            return CapabilityProbe.ReadControls(target, _session);
         }
         catch (Exception ex)
         {
             Log.Error(ex, $"read controls failed for {target.Id}");
             return new DisplayControls { DisplayId = target.Id, Error = ex.Message };
         }
+        finally
+        {
+            Monitor.Exit(_ddcLock);
+        }
     }
 
     /// <summary>写入一个扩展控制项。</summary>
     public bool WriteControl(DisplayTarget target, byte code, uint value, out string? error)
     {
+        if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs))
+        {
+            error = "DDC 通道繁忙,请稍后重试。";
+            return false;
+        }
+
         try
         {
-            lock (_writeQueue) return CapabilityProbe.Write(target, _session, code, value, out error);
+            return CapabilityProbe.Write(target, _session, code, value, out error);
         }
         catch (Exception ex)
         {
             Log.Error(ex, $"write control 0x{code:X2} failed for {target.Id}");
             error = ex.Message;
             return false;
+        }
+        finally
+        {
+            Monitor.Exit(_ddcLock);
         }
     }
 
@@ -796,14 +936,23 @@ public sealed class DisplayWorker
 
     private bool WriteControlCore(DisplayTarget target, byte code, uint value)
     {
+        if (!Monitor.TryEnter(_ddcLock, DdcGateTimeoutMs))
+        {
+            return false;
+        }
+
         try
         {
-            lock (_writeQueue) return CapabilityProbe.Write(target, _session, code, value, out _);
+            return CapabilityProbe.Write(target, _session, code, value, out _);
         }
         catch (Exception ex)
         {
             Log.Error(ex, $"write control 0x{code:X2} failed for {target.Id}");
             return false;
+        }
+        finally
+        {
+            Monitor.Exit(_ddcLock);
         }
     }
 

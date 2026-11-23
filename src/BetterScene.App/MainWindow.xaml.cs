@@ -341,6 +341,12 @@ public sealed partial class MainWindow : Window
         _tray.LightRequested += () => Dispatch(() => SwitchScene(SystemTheme.Light));
         _tray.DarkRequested += () => Dispatch(() => SwitchScene(SystemTheme.Dark));
         _tray.ToggleSceneRequested += () => Dispatch(() => SwitchScene(ThemeSwitcher.Current == SystemTheme.Dark ? SystemTheme.Light : SystemTheme.Dark));
+        _tray.AutoSceneToggleRequested += () => Dispatch(() =>
+        {
+            App.Settings.AutoScene = !App.Settings.AutoScene;
+            SettingsStore.SaveDeferred(App.Settings);
+            App.ApplyAutoSceneSetting();
+        });
         _tray.ExitRequested += () => Dispatch(ExitFromTray);
 
         _tray.Show(App.Settings.ShowTrayIcon);
@@ -743,7 +749,7 @@ public sealed partial class MainWindow : Window
         ReleasePageContent();
         _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
         {
-            await Task.Delay(1200);
+            await Task.Delay(1200).ConfigureAwait(false);
             MemoryTrimmer.CompactAndTrim("tray start");
         });
     }
@@ -752,7 +758,9 @@ public sealed partial class MainWindow : Window
     {
         if (_forceExit) return;
 
-        if (App.Settings.CloseBehavior == "exit")
+        // 没有托盘图标时「最小化到托盘」等于把窗口藏进无处可点的死角
+        // (既关不掉、也没托盘可以唤回),必须按退出处理。
+        if (App.Settings.CloseBehavior == "exit" || !App.Settings.ShowTrayIcon)
         {
             ExitFromTray();
             return;
@@ -789,7 +797,7 @@ public sealed partial class MainWindow : Window
 
         _ = DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, async () =>
         {
-            await Task.Delay(1200);
+            await Task.Delay(1200).ConfigureAwait(false);
             MemoryTrimmer.CompactAndTrim("window hidden");
         });
     }

@@ -259,6 +259,10 @@ public partial class App : Application
             {
                 Main?.SwitchScene(theme);
             }
+            else if (ThemeSwitcher.Current != theme)
+            {
+                Main?.SwitchScene(theme);
+            }
             else
             {
                 Main?.ApplyAutoScene();

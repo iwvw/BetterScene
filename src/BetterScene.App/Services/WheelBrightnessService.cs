@@ -41,6 +41,10 @@ public sealed class WheelBrightnessService : IDisposable
     private const int VK_CONTROL = 0x11;
     private const int VK_SHIFT = 0x10;
     private const int VK_MENU = 0x12;
+    private const int VK_LWIN = 0x5B;
+    private const int VK_RWIN = 0x5C;
+
+    private int _deltaRemainder;
     private const int BoundsCacheMs = 1000;
 
     private static readonly HashSet<string> DesktopClasses = new(StringComparer.OrdinalIgnoreCase)
@@ -167,8 +171,15 @@ public sealed class WheelBrightnessService : IDisposable
 
         if (!matched) return CallNextHookEx(_hook, code, wParam, lParam);
 
-        int steps = Math.Max(1, Math.Abs(delta) / 120);
-        int amount = (delta > 0 ? steps : -steps) * config.Step;
+        // 高分辨率滚轮/触摸板会发小于 120 的 delta,直接「至少 1 步」会过于灵敏;
+        // 跨事件累积余数,凑够一整格才算一步。
+        int total = _deltaRemainder + delta;
+        int steps = total / 120;
+        _deltaRemainder = total % 120;
+
+        if (steps == 0) return new IntPtr(1);
+
+        int amount = steps * config.Step;
 
         List<DisplayTarget> targets = DisplayBus.Current;
         DisplayTarget? target = TargetAt(info.pt, targets);
@@ -227,6 +238,11 @@ public sealed class WheelBrightnessService : IDisposable
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) active |= HotkeyChord.ModControl;
         if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) active |= HotkeyChord.ModAlt;
         if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) active |= HotkeyChord.ModShift;
+        if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0)
+        {
+            active |= HotkeyChord.ModWin;
+        }
+
         return (active & required) == required;
     }
 

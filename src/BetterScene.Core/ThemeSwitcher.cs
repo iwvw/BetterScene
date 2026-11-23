@@ -55,7 +55,6 @@ public static class ThemeSwitcher
     private sealed record Request(SystemTheme Theme, string? Wallpaper, string? ThemeFile, bool ApplyWallpaper);
 
     private static readonly object QueueGate = new();
-    private static readonly AutoResetEvent QueueSignal = new(false);
     private static Request? _pending;
     private static long _dueMs;
     private static Thread? _worker;
@@ -192,9 +191,9 @@ public static class ThemeSwitcher
 
             if (due > _dueMs) _dueMs = due;
             if (_worker is null) StartWorkerLocked();
-        }
 
-        QueueSignal.Set();
+            Monitor.Pulse(QueueGate);
+        }
     }
 
     private static void StartWorkerLocked()
@@ -223,43 +222,46 @@ public static class ThemeSwitcher
     {
         while (true)
         {
+            try
+            {
             Request? request;
             long due;
 
             lock (QueueGate)
             {
+                while (_pending is null) Monitor.Wait(QueueGate, 400);
+
                 request = _pending;
                 due = _dueMs;
                 _pending = null;
             }
 
-            if (request is null)
-            {
-                QueueSignal.WaitOne(400);
-                continue;
-            }
-
             long remainingMs = due - MonoClock.NowMs;
             if (remainingMs > 0)
             {
-                QueueSignal.WaitOne((int)Math.Min(int.MaxValue, remainingMs));
+                bool superseded = false;
+                lock (QueueGate)
+                {
+                    while (_pending is null && MonoClock.NowMs < due)
+                    {
+                        long wait = due - MonoClock.NowMs;
+                        Monitor.Wait(QueueGate, (int)Math.Min(int.MaxValue, wait));
+                    }
+
+                    superseded = _pending is not null;
+                }
 
                 // 等待期间若来了新请求，丢弃手上这个旧的（新请求会覆盖它）。
                 // 原来这里还写了一句 _pending ??= request，但那行永远不执行：
                 // 外层已经判断 _pending is not null，??= 是空操作，只会误导读者。
-                lock (QueueGate)
-                {
-                    if (_pending is not null) continue;
-                }
+                if (superseded) continue;
             }
 
-            try
-            {
-                ApplyCore(request);
+            ApplyCore(request);
             }
             catch (Exception ex)
             {
-                Log.Error(ex, $"apply theme {request.Theme} failed");
+                Log.Error(ex, "theme apply loop failed");
             }
         }
     }
@@ -279,7 +281,6 @@ public static class ThemeSwitcher
         catch (Exception ex)
         {
             Log.Error(ex, "write personalize keys failed");
-            return;
         }
 
         bool ok = Broadcast();
@@ -301,7 +302,7 @@ public static class ThemeSwitcher
 
         if (!string.IsNullOrWhiteSpace(request.ThemeFile))
         {
-            ThemeApplyResult result = ThemeFileService.Apply(request.ThemeFile!, request.Theme);
+            ThemeApplyResult result = ThemeFileService.Apply(request.ThemeFile!, request.Theme, request.ApplyWallpaper);
             if (!result.Success)
             {
                 Log.Warn($"apply theme file failed: {result.Error}");
@@ -335,11 +336,14 @@ public static class ThemeSwitcher
 
                 // 修补完成 = 这一轮主题切换真正结束（重绘、画刷重建、字形缓存
                 // 全部落定）。工作集回收要等这一刻之后才有意义。
-                NotifySettled();
             }
             catch (Exception ex)
             {
                 Log.Warn($"theme repair failed: {ex.Message}");
+            }
+            finally
+            {
+                NotifySettled();
             }
         });
     }
@@ -385,6 +389,12 @@ public static class ThemeSwitcher
             }
 
             bool ok = Broadcast();
+            if (!ok)
+            {
+                // 与 ApplyCore 保持一致:广播失败重试一次。
+                Thread.Sleep(250);
+                ok = Broadcast();
+            }
             Log.Info($"system theme set to {theme} (broadcast={(ok ? "ok" : "failed")})");
 
             NotifyApplied(theme);

@@ -202,7 +202,7 @@ public static class ThemeFileService
                         }
                         else if (key.Equals("SystemMode", StringComparison.OrdinalIgnoreCase))
                         {
-                            useSystemMode = true;
+                            useSystemMode = value.Length == 0 || value.Equals("Auto", StringComparison.OrdinalIgnoreCase);
                         }
                         break;
 
@@ -234,7 +234,7 @@ public static class ThemeFileService
         }
     }
 
-    public static ThemeApplyResult Apply(string themePath, SystemTheme systemMode)
+    public static ThemeApplyResult Apply(string themePath, SystemTheme systemMode, bool applyWallpaper = true)
     {
         try
         {
@@ -246,7 +246,7 @@ public static class ThemeFileService
 
             string? appliedWallpaper = null;
 
-            if (!string.IsNullOrWhiteSpace(parsed.Wallpaper) && File.Exists(parsed.Wallpaper))
+            if (applyWallpaper && !string.IsNullOrWhiteSpace(parsed.Wallpaper) && File.Exists(parsed.Wallpaper))
             {
                 if (ThemeSwitcher.ApplyWallpaper(parsed.Wallpaper)) appliedWallpaper = parsed.Wallpaper;
             }

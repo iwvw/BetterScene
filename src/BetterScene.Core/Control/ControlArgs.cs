@@ -155,7 +155,19 @@ public static class ControlArgs
         return value;
     }
 
-    /// <summary>把 0–100 的百分比夹进合法区间，越界直接报错而不是静默改写。</summary>
+    /// <summary>带上限的数值解析(例如 VCP 值只支持 16 位)。</summary>
+    public static uint RequireUInt(this JsonObject args, string name, uint max)
+    {
+        uint value = args.RequireUInt(name);
+        if (value > max)
+        {
+            throw new ControlException(ControlErrorCodes.BadRequest, $"{name} 超过允许上限 {max}(收到 {value})");
+        }
+
+        return value;
+    }
+
+    /// <summary>把 0–100 的百分比夹进合法区间,越界直接报错而不是静默改写。</summary>
     public static int RequirePercent(this JsonObject args, string name)
     {
         int value = args.RequireInt(name);

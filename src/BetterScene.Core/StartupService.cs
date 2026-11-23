@@ -49,7 +49,17 @@ public static class StartupService
         try
         {
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKey);
-            return key?.GetValue(ValueName) is string s && s.Length > 0;
+            if (key?.GetValue(ValueName) is not string s || s.Length == 0) return false;
+
+            // 用户在任务管理器里「禁用」后,Run 值仍在,但
+            // StartupApproved\Run 会置一个二进制标志(bit0 = 已禁用)。
+            using RegistryKey? approved = Registry.CurrentUser.OpenSubKey(ApprovedKey);
+            if (approved?.GetValue(ValueName) is byte[] flag && flag.Length > 0)
+            {
+                return (flag[0] & 0x01) == 0;
+            }
+
+            return true;
         }
         catch
         {

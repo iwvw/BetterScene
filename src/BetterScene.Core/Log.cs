@@ -61,8 +61,9 @@ public static class AppPaths
 public static class Log
 {
     private static readonly object Gate = new();
-    private static readonly FileStream? Stream;
-    private static readonly StreamWriter? Writer;
+    private static FileStream? _stream;
+    private static StreamWriter? _writer;
+    private static long _writtenBytes;
 
     /// <summary>
     /// 日志文件上限。超过就原地轮转一次（重命名为 .1，重建新文件）。
@@ -81,14 +82,50 @@ public static class Log
     {
         try
         {
-            Stream = OpenWithRotation();
-            Writer = new StreamWriter(Stream, new UTF8Encoding(false)) { AutoFlush = true };
+            OpenLocked();
         }
-        catch
+        catch (Exception ex)
         {
+            // 日志系统自身坏掉时至少留一处可见痕迹。
+            System.Diagnostics.Debug.WriteLine($"open log failed: {ex.Message}");
         }
 
         Write("INFO", $"==== session start pid={Environment.ProcessId} ====");
+    }
+
+    private static void OpenLocked()
+    {
+        _stream = OpenWithRotation();
+        _writtenBytes = _stream.Length;
+        _writer = new StreamWriter(_stream, new UTF8Encoding(false)) { AutoFlush = true };
+    }
+
+    /// <summary>超限时原地轮转:关闭当前文件,由 OpenWithRotation 挪成 .1 再新建。</summary>
+    private static void RotateLocked()
+    {
+        try
+        {
+            // 必须先释放当前句柄,Windows 才允许 File.Move 重命名被打开的文件。
+            _writer?.Dispose();
+            _stream = null;
+            _writer = null;
+            OpenLocked();
+        }
+        catch
+        {
+            // 轮转失败(磁盘满 / 权限 / 占用)时至少重新打开原文件继续追加,
+            // 绝不把日志系统永久打哑。
+            try
+            {
+                _stream = new FileStream(AppPaths.LogFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                _writtenBytes = _stream.Length;
+                _writer = new StreamWriter(_stream, new UTF8Encoding(false)) { AutoFlush = true };
+                Write("WARN", "log rotation failed, continued appending to current file");
+            }
+            catch
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -142,9 +179,15 @@ public static class Log
         string line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level,-5}] [{Environment.ProcessId}] {message}";
         lock (Gate)
         {
+            if (_writer is null) return;
+
             try
             {
-                Writer?.WriteLine(line);
+                _writer.WriteLine(line);
+                _writtenBytes += Encoding.UTF8.GetByteCount(line) + 2;
+
+                // 常驻会话里日志会持续增长:超限当场轮转,而不是等下次启动。
+                if (_writtenBytes >= MaxBytes) RotateLocked();
             }
             catch
             {

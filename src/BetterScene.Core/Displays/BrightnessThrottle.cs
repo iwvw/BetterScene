@@ -53,7 +53,7 @@ public sealed class BrightnessThrottle : IDisposable
             entry.HasPending = true;
         }
 
-        _signal.Set();
+        Signal();
     }
     public void FlushNow()
     {
@@ -66,7 +66,13 @@ public sealed class BrightnessThrottle : IDisposable
             }
         }
 
-        _signal.Set();
+        Signal();
+    }
+
+    private void Signal()
+    {
+        try { _signal.Set(); }
+        catch (ObjectDisposedException) { }
     }
 
     private void WorkerLoop()
@@ -128,8 +134,22 @@ public sealed class BrightnessThrottle : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _signal.Set();
+        Signal();
         _worker.Join(800);
+
+        // 退出前把最后的待写值补上,避免丢掉最后一次亮度变更。
+        List<(string Id, int Value)> pending;
+        lock (_gate)
+        {
+            pending = _entries.Where(p => p.Value.HasPending).Select(p => (p.Key, p.Value.Pending)).ToList();
+        }
+
+        foreach ((string id, int value) in pending)
+        {
+            try { Flushed?.Invoke(id, value); }
+            catch (Exception ex) { Log.Warn($"final brightness flush failed for {id}: {ex.Message}"); }
+        }
+
         _signal.Dispose();
     }
 }

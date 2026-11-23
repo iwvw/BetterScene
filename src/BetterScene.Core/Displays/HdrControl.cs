@@ -177,6 +177,7 @@ public static class HdrControl
             if (QueryDisplayConfig(QdcOnlyActivePaths, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero) != ErrorSuccess)
                 return false;
 
+            bool matched = false;
             for (int i = 0; i < pathCount; i++)
             {
                 DisplayConfigPathInfo path = paths[i];
@@ -188,10 +189,20 @@ public static class HdrControl
                 if (!string.Equals(gdi, target.GdiName, StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                if (matched)
+                {
+                    // 克隆/镜像:同一 GDI 名对应多条 target 路径,无法精确区分。
+                    // 取第一个并用日志标注;直接返回 false 会被下游当成「HDR 未开启」而误清调光。
+                    Log.Warn($"hdr: multiple target paths share gdi name {target.GdiName}, using first");
+                    return true;
+                }
+
                 adapterId = path.targetInfo.adapterId;
                 targetId = path.targetInfo.id;
-                return true;
+                matched = true;
             }
+
+            return matched;
         }
         catch (Exception ex)
         {

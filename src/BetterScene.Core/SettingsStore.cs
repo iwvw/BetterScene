@@ -158,35 +158,104 @@ public static class SettingsStore
         {
             if (!File.Exists(AppPaths.SettingsFile)) return new AppSettings();
             string json = File.ReadAllText(AppPaths.SettingsFile);
-            return JsonSerializer.Deserialize<AppSettings>(json, Options) ?? new AppSettings();
+            AppSettings parsed = JsonSerializer.Deserialize<AppSettings>(json, Options) ?? new AppSettings();
+            return Normalize(parsed);
         }
         catch (Exception ex)
         {
             Log.Error(ex, "load settings failed, falling back to defaults");
+
+            // 只有「解析失败」才视为文件损坏并备份;IO/权限类失败不移动文件(可能是临时占用)。
+            if (ex is JsonException or NotSupportedException)
+            {
+                BackupCorrupt();
+            }
+
             return new AppSettings();
+        }
+    }
+
+    private static AppSettings Normalize(AppSettings settings)
+    {
+        settings.DisplayOrder ??= new List<string>();
+        settings.MiniControlsByDisplay ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        settings.MiniPanelControls ??= new List<string>();
+        settings.BrightnessVcpOverrides ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        settings.Brightness ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        settings.BrightnessRanges ??= new Dictionary<string, BrightnessRange>(StringComparer.OrdinalIgnoreCase);
+
+        settings.AutoSwitch ??= new AutoSwitchSettings();
+        settings.AutoSwitch.Rules ??= new List<SceneRule>();
+        settings.AutoSwitch.Conditions ??= new AutoSwitchConditions();
+        settings.AutoSwitch.Conditions.BlockingProcesses ??= new List<string>();
+
+        return settings;
+    }
+
+    private static void BackupCorrupt()
+    {
+        try
+        {
+            if (!File.Exists(AppPaths.SettingsFile)) return;
+            string backup = AppPaths.SettingsFile + ".corrupt-" + DateTime.Now.ToString("yyyyMMddHHmmss") + "-" + Environment.ProcessId;
+            File.Move(AppPaths.SettingsFile, backup, overwrite: true);
+            Log.Warn($"corrupt settings backed up to {backup}");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"backup corrupt settings failed: {ex.Message}");
         }
     }
 
     public static void Save(AppSettings settings)
     {
+        string json;
         try
         {
-            string json = JsonSerializer.Serialize(settings, Options);
-            string temp = AppPaths.SettingsFile + ".tmp";
-            File.WriteAllText(temp, json);
-            File.Move(temp, AppPaths.SettingsFile, overwrite: true);
+            json = JsonSerializer.Serialize(settings, Options);
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "save settings failed");
+            Log.Error(ex, "serialize settings failed");
+            return;
+        }
+
+        WriteJson(json);
+    }
+
+    private static void WriteJson(string json)
+    {
+        lock (Gate)
+        {
+            try
+            {
+                string temp = AppPaths.SettingsFile + "." + Environment.ProcessId + ".tmp";
+                File.WriteAllText(temp, json);
+                File.Move(temp, AppPaths.SettingsFile, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "save settings failed");
+            }
         }
     }
 
     public static void SaveDeferred(AppSettings settings)
     {
+        string json;
+        try
+        {
+            json = JsonSerializer.Serialize(settings, Options);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "serialize settings (deferred) failed");
+            return;
+        }
+
         lock (Gate)
         {
-            Pending = settings;
+            Pending = json;
 
             // 已经是"延迟保存"状态就不要反复重置定时器：
             // 高频拖动亮度时每次都 new Timer 会造成明显卡顿。
@@ -198,7 +267,7 @@ public static class SettingsStore
 
     private static void Flush()
     {
-        AppSettings? pending;
+        string? pending;
         lock (Gate)
         {
             pending = Pending;
@@ -207,10 +276,10 @@ public static class SettingsStore
             _timer = null;
         }
 
-        if (pending is not null) Save(pending);
+        if (pending is not null) WriteJson(pending);
     }
 
     private static readonly object Gate = new();
-    private static AppSettings? Pending;
+    private static string? Pending;
     private static System.Threading.Timer? _timer;
 }

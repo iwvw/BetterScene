@@ -24,6 +24,7 @@ public sealed class BrightnessCoalescer : IDisposable
         public int Written;
         public bool InFlight;
         public bool HasTarget;
+        public long LastChangeMs = MonoClock.Never;
 
         /// <summary>上次实际下发到管道的时刻（<see cref="MonoClock"/> 口径）。</summary>
         public long LastSentMs = MonoClock.Never;
@@ -78,6 +79,7 @@ public sealed class BrightnessCoalescer : IDisposable
 
             slot.Target = clamped;
             slot.HasTarget = true;
+            slot.LastChangeMs = MonoClock.NowMs;
 
             if (slot.InFlight) return;
 
@@ -86,7 +88,8 @@ public sealed class BrightnessCoalescer : IDisposable
 
         _ = Task.Run(() => Pump(id));
 
-        _settleTimer.Change(SettleDelayMs, Timeout.Infinite);
+        try { _settleTimer.Change(SettleDelayMs, Timeout.Infinite); }
+        catch (ObjectDisposedException) { }
     }
 
     /// <summary>把某个显示器当前的最新目标值写出去，写完再检查是否需要补写。</summary>
@@ -100,8 +103,15 @@ public sealed class BrightnessCoalescer : IDisposable
             {
                 if (_disposed) return;
 
-                if (!_slots.TryGetValue(id, out Slot? slot) || !slot.HasTarget)
+                if (!_slots.TryGetValue(id, out Slot? slot))
                 {
+                    return;
+                }
+
+                if (!slot.HasTarget)
+                {
+                    // 不能只 return:必须清掉 InFlight,否则该屏永远不再写硬件。
+                    slot.InFlight = false;
                     return;
                 }
 
@@ -115,7 +125,8 @@ public sealed class BrightnessCoalescer : IDisposable
                 if (slot.LastSentMs != MonoClock.Never && since >= 0 && since < MinSendIntervalMs)
                 {
                     slot.InFlight = false;
-                    _settleTimer.Change(SettleDelayMs, Timeout.Infinite);
+                    try { _settleTimer.Change(SettleDelayMs, Timeout.Infinite); }
+                    catch (ObjectDisposedException) { }
                     return;
                 }
 
@@ -167,26 +178,46 @@ public sealed class BrightnessCoalescer : IDisposable
     /// </summary>
     private void Settle()
     {
-        List<string> pending;
+        long now = MonoClock.NowMs;
+        List<string> due;
+        long nextDue = long.MaxValue;
 
         lock (_gate)
         {
             if (_disposed) return;
 
-            pending = _slots
-                .Where(pair => pair.Value.HasTarget && !pair.Value.InFlight)
-                .Select(pair => pair.Key)
-                .ToList();
-
-            foreach (string key in pending)
+            due = new List<string>();
+            foreach (var pair in _slots)
             {
-                _slots[key].InFlight = true;
+                Slot slot = pair.Value;
+                if (!slot.HasTarget || slot.InFlight) continue;
+
+                long dueAt = slot.LastChangeMs == MonoClock.Never ? now : slot.LastChangeMs + SettleDelayMs;
+                if (now >= dueAt)
+                {
+                    slot.InFlight = true;
+                    due.Add(pair.Key);
+                }
+                else if (dueAt < nextDue)
+                {
+                    nextDue = dueAt;
+                }
             }
         }
 
-        foreach (string key in pending)
+        foreach (string key in due)
         {
             _ = Task.Run(() => Pump(key));
+        }
+
+        if (nextDue != long.MaxValue)
+        {
+            // 还有未到点的槽位:按自己到点时间重新排程。
+            // 注意:SetTarget/Pump 仍会无条件重置这个共享定时器,持续调节时 settle 可能被推后;
+            // 但每个槽位在 Pump 中都会写最新值,活动停止后最终值仍会落地。
+            int delay = (int)Math.Max(1, Math.Min(int.MaxValue, nextDue - now));
+            try { _settleTimer.Change(delay, Timeout.Infinite); }
+            catch (ObjectDisposedException) { }
         }
     }
 

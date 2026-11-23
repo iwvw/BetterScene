@@ -122,8 +122,8 @@ public static class DisplayModeControl
 
         result.Sort((a, b) =>
         {
-            int byArea = (b.Width * b.Height).CompareTo(a.Width * a.Height);
-            if (byArea != 0) return byArea;
+            long byArea = ((long)b.Width * b.Height).CompareTo((long)a.Width * a.Height);
+            if (byArea != 0) return byArea < 0 ? -1 : 1;
 
             int byRefresh = b.RefreshRate.CompareTo(a.RefreshRate);
             if (byRefresh != 0) return byRefresh;

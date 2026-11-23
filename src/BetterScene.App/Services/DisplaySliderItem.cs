@@ -8,7 +8,7 @@ using Microsoft.UI.Xaml;
 
 namespace BetterScene.App.Services;
 
-public sealed class DisplaySliderItem : INotifyPropertyChanged
+public sealed class DisplaySliderItem : INotifyPropertyChanged, IDisposable
 {
     private int _level;
     private bool _suppress;
@@ -333,6 +333,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(RangeHigh));
             OnPropertyChanged(nameof(RangeSummary));
+            OnPropertyChanged(nameof(LevelMinimum));
+            OnPropertyChanged(nameof(LevelMaximum));
         }
     }
 
@@ -346,6 +348,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(RangeLow));
             OnPropertyChanged(nameof(RangeSummary));
+            OnPropertyChanged(nameof(LevelMinimum));
+            OnPropertyChanged(nameof(LevelMaximum));
         }
     }
 
@@ -356,6 +360,9 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(RangeSummary));
         OnPropertyChanged(nameof(RangeLow));
         OnPropertyChanged(nameof(RangeHigh));
+        OnPropertyChanged(nameof(LevelMinimum));
+        OnPropertyChanged(nameof(LevelMaximum));
+        OnPropertyChanged(nameof(LevelRangeHintVisibility));
     }
 
     public string LevelText => CanControl ? $"{_level}%" : "—";
@@ -369,15 +376,27 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     ///
     /// 非 HDR 时仍是 0：背光和 WMI 都能真正降到 0。
     /// </summary>
-    public double LevelMinimum => UsesGammaUnderHdr() && Hdr.IsEnabled
-        ? GammaBrightness.MinimumDriverScale
-        : 0;
+    public double LevelMinimum
+    {
+        get
+        {
+            int floor = UsesGammaUnderHdr() && Hdr.IsEnabled ? (int)GammaBrightness.MinimumDriverScale : 0;
+            return Math.Max(floor, BrightnessHub.RangeOf(Placeholder).Lowest);
+        }
+    }
 
-    public double LevelMaximum => 100;
+    public double LevelMaximum
+    {
+        get
+        {
+            // 上限必须不低于下限:HDR 下限是 50,若用户范围上限 <50,min>max 会让 Math.Clamp 抛异常。
+            return Math.Max(BrightnessHub.RangeOf(Placeholder).Highest, LevelMinimum);
+        }
+    }
 
     /// <summary>HDR 下滑块范围收窄了，界面上说明一句，避免用户以为滑块坏了。</summary>
     public Visibility LevelRangeHintVisibility =>
-        LevelMinimum > 0 ? Visibility.Visible : Visibility.Collapsed;
+        UsesGammaUnderHdr() && Hdr.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
 
     public string LevelRangeHint => $"HDR 下最低 {GammaBrightness.MinimumDriverScale:0}%";
 
@@ -441,6 +460,7 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
     private readonly object _commitGate = new();
     private Timer? _commitTimer;
+    private bool _disposed;
 
     /// <summary>
     /// 拖动停止后把最终值写进硬件。
@@ -457,6 +477,8 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
     {
         lock (_commitGate)
         {
+            if (_disposed) return;
+
             if (_commitTimer is null)
             {
                 _commitTimer = new Timer(_ => Commit(), null, Timeout.Infinite, Timeout.Infinite);
@@ -491,6 +513,17 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         catch (Exception ex)
         {
             Log.Warn($"brightness commit failed: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        // 提交定时器的回调捕获了 this,不释放会把整棵卡片 UI 树一起 root 住。
+        lock (_commitGate)
+        {
+            _disposed = true;
+            _commitTimer?.Dispose();
+            _commitTimer = null;
         }
     }
 
@@ -1345,13 +1378,17 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
 
     private void ApplyLevel(int level)
     {
-        bool recentlyWritten = MonoClock.Within(_lastUserWriteMs, 1500);
-        if (recentlyWritten) return;
-
         int clamped = Math.Clamp(level, 0, 100);
-        _suppress = true;
-        if (_level != clamped) _level = clamped;
-        _suppress = false;
+
+        // 刚写过硬件的 1.5s 内不覆盖滑块位置(避免和用户拖动打架),
+        // 但其它元数据通知照常发,否则这段时间里显示器状态变化不会反映到界面。
+        bool recentlyWritten = MonoClock.Within(_lastUserWriteMs, 1500);
+        if (!recentlyWritten)
+        {
+            _suppress = true;
+            if (_level != clamped) _level = clamped;
+            _suppress = false;
+        }
 
         OnPropertyChanged(nameof(Title));
         OnPropertyChanged(nameof(DisplayTitle));
@@ -1366,8 +1403,12 @@ public sealed class DisplaySliderItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(NameLineVisibility));
         OnPropertyChanged(nameof(HardwareSummary));
         OnPropertyChanged(nameof(RawSummary));
-        OnPropertyChanged(nameof(Level));
-        OnPropertyChanged(nameof(LevelText));
+        if (!recentlyWritten)
+        {
+            OnPropertyChanged(nameof(Level));
+            OnPropertyChanged(nameof(LevelText));
+        }
+
         OnPropertyChanged(nameof(ShowRange));
         OnPropertyChanged(nameof(RangeSummary));
         OnPropertyChanged(nameof(RangeLow));

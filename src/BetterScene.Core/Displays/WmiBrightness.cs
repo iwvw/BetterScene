@@ -62,6 +62,10 @@ public static class WmiBrightness
     private static extern uint PowerReadACValueIndex(
         IntPtr rootPowerKey, ref Guid schemeGuid, ref Guid subGroupGuid, ref Guid settingGuid, out uint value);
 
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerReadDCValueIndex(
+        IntPtr rootPowerKey, ref Guid schemeGuid, ref Guid subGroupGuid, ref Guid settingGuid, out uint value);
+
     [DllImport("kernel32.dll")]
     private static extern IntPtr LocalFree(IntPtr h);
 
@@ -82,10 +86,13 @@ public static class WmiBrightness
             using var searcher = new ManagementObjectSearcher("root\\WMI", $"SELECT * FROM {BrightnessClass}");
             foreach (ManagementBaseObject instance in searcher.Get())
             {
-                object? value = instance["CurrentBrightness"];
-                if (value is null) continue;
-                brightness = Convert.ToInt32(value);
-                return true;
+                using (instance)
+                {
+                    object? value = instance["CurrentBrightness"];
+                    if (value is null) continue;
+                    brightness = Convert.ToInt32(value);
+                    return true;
+                }
             }
             return false;
         }
@@ -103,7 +110,10 @@ public static class WmiBrightness
             using var searcher = new ManagementObjectSearcher("root\\WMI", $"SELECT * FROM {BrightnessClass}");
             foreach (ManagementBaseObject instance in searcher.Get())
             {
-                if (instance["InstanceName"] is string name && name.Length > 0) return name;
+                using (instance)
+                {
+                    if (instance["InstanceName"] is string name && name.Length > 0) return name;
+                }
             }
         }
         catch (Exception ex)
@@ -197,6 +207,14 @@ public static class WmiBrightness
             return false;
         }
 
+        // DC 分支写失败只在电池供电时才算失败:某些机型 DC 亮度由策略托管/只读,
+        // AC 供电时 AC 已生效、屏幕已变亮,不应因此判失败。
+        if (dcResult != 0 && PowerStatus.OnBattery)
+        {
+            Log.Warn($"power scheme DC write failed on battery: dc={dcResult}");
+            return false;
+        }
+
         // 生效有几十毫秒延迟，轮询确认。
         long start = MonoClock.NowMs;
         while (MonoClock.NowMs - start < WmiWritePolicy.VerifyTimeoutMs)
@@ -248,7 +266,13 @@ public static class WmiBrightness
             Guid subgroup = VideoSubgroup;
             Guid setting = BrightnessSetting;
 
-            if (PowerReadACValueIndex(IntPtr.Zero, ref schemeRef, ref subgroup, ref setting, out uint raw) == 0)
+            // 按当前供电状态读对应分支的方案值:电池供电时必须看 DC,否则读的是 AC 旧值。
+            uint raw;
+            uint readResult = PowerStatus.OnBattery
+                ? PowerReadDCValueIndex(IntPtr.Zero, ref schemeRef, ref subgroup, ref setting, out raw)
+                : PowerReadACValueIndex(IntPtr.Zero, ref schemeRef, ref subgroup, ref setting, out raw);
+
+            if (readResult == 0)
             {
                 value = (int)Math.Clamp(raw, 0u, 100u);
                 return true;
@@ -307,7 +331,11 @@ public static class WmiBrightness
         try
         {
             using var searcher = new ManagementObjectSearcher("root\\WMI", "SELECT * FROM WmiMonitorID");
-            foreach (ManagementBaseObject _ in searcher.Get()) return true;
+            foreach (ManagementBaseObject instance in searcher.Get())
+            {
+                instance.Dispose();
+                return true;
+            }
         }
         catch (Exception ex)
         {

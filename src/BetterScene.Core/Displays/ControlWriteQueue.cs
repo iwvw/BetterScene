@@ -19,6 +19,7 @@ internal sealed class ControlWriteQueue : IDisposable
         public uint Pending;
         public bool HasPending;
         public bool InFlight;
+        public long LastChangeMs = MonoClock.Never;
     }
 
     private readonly object _gate = new();
@@ -56,6 +57,7 @@ internal sealed class ControlWriteQueue : IDisposable
 
             slot.Pending = value;
             slot.HasPending = true;
+            slot.LastChangeMs = MonoClock.NowMs;
 
             if (slot.InFlight) return;
 
@@ -65,7 +67,8 @@ internal sealed class ControlWriteQueue : IDisposable
         string capturedKey = key;
         _ = Task.Run(() => Pump(capturedKey));
 
-        _settleTimer.Change(SettleDelayMs, Timeout.Infinite);
+        try { _settleTimer.Change(SettleDelayMs, Timeout.Infinite); }
+        catch (ObjectDisposedException) { }
     }
 
     private void Pump(string key)
@@ -123,29 +126,46 @@ internal sealed class ControlWriteQueue : IDisposable
         }
     }
 
-    /// <summary>停止调节后的兜底补写。</summary>
+    /// <summary>停止调节后的兜底补写(每个槽位按自己的最后变更时间计时,互不推迟)。</summary>
     private void Settle()
     {
-        List<string> pending;
+        long now = MonoClock.NowMs;
+        List<string> due;
+        long nextDue = long.MaxValue;
 
         lock (_gate)
         {
             if (_disposed) return;
 
-            pending = _slots
-                .Where(pair => pair.Value.HasPending && !pair.Value.InFlight)
-                .Select(pair => pair.Key)
-                .ToList();
-
-            foreach (string key in pending)
+            due = new List<string>();
+            foreach (var pair in _slots)
             {
-                _slots[key].InFlight = true;
+                Slot slot = pair.Value;
+                if (!slot.HasPending || slot.InFlight) continue;
+
+                long dueAt = slot.LastChangeMs == MonoClock.Never ? now : slot.LastChangeMs + SettleDelayMs;
+                if (now >= dueAt)
+                {
+                    slot.InFlight = true;
+                    due.Add(pair.Key);
+                }
+                else if (dueAt < nextDue)
+                {
+                    nextDue = dueAt;
+                }
             }
         }
 
-        foreach (string key in pending)
+        foreach (string key in due)
         {
             _ = Task.Run(() => Pump(key));
+        }
+
+        if (nextDue != long.MaxValue)
+        {
+            int delay = (int)Math.Max(1, Math.Min(int.MaxValue, nextDue - now));
+            try { _settleTimer.Change(delay, Timeout.Infinite); }
+            catch (ObjectDisposedException) { }
         }
     }
 

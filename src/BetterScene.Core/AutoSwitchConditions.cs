@@ -95,8 +95,9 @@ public static class AutoSwitchConditions2
 
         if (conditions.BlockOnActivity)
         {
-            int idle = IdleTime.Minutes();
-            if (idle < Math.Max(1, conditions.IdleMinutes))
+            // 读不到空闲时间时按「未触发」处理(fail-open),
+            // 不能让一个读不到的传感器把自动切换永久卡死。
+            if (IdleTime.TryMinutes(out int idle) && idle < Math.Max(1, conditions.IdleMinutes))
             {
                 return new ConditionState
                 {
@@ -166,34 +167,45 @@ public static class AutoSwitchConditions2
             yield break;
         }
 
-        foreach (System.Diagnostics.Process process in processes)
+        try
         {
-            string name = string.Empty;
-            try
+            foreach (System.Diagnostics.Process process in processes)
             {
-                name = process.ProcessName;
+                string name = string.Empty;
+                try
+                {
+                    name = process.ProcessName;
+                }
+                catch
+                {
+                }
+
+                process.Dispose();
+
+                if (name.Length > 0) yield return name;
             }
-            catch
+        }
+        finally
+        {
+            // 命中即返回时迭代器被提前终止,剩余 Process 句柄也必须释放,
+            // 否则每次判定都会漏掉一批句柄。
+            foreach (System.Diagnostics.Process process in processes)
             {
+                process.Dispose();
             }
-
-            process.Dispose();
-
-            if (name.Length > 0) yield return name;
         }
     }
 }
 
 /// <summary>
 /// GPU 占用读取。走 WMI 的 GPU Engine 计数器，
-/// 把同一物理适配器上的所有 3D 引擎累加起来（多引擎显卡会有 20+ 个实例）。
+/// 取各 3D 引擎中占用最高者作为代表值(多引擎显卡会有 20+ 个实例,累加会被放大)。
 /// </summary>
 public static class GpuLoad
 {
     private static readonly object Gate = new();
     private static long _lastQueryMs = MonoClock.Never;
     private static double _cached;
-    private static bool _unavailable;
 
     public static bool TryRead(out double percent)
     {
@@ -201,8 +213,6 @@ public static class GpuLoad
 
         lock (Gate)
         {
-            if (_unavailable) return false;
-
             // 2 秒内的重复查询直接返回缓存：WMI 查询本身开销不小，
             // 而条件判定是秒级的，不需要更高精度。
             if (MonoClock.Within(_lastQueryMs, 2000))
@@ -217,27 +227,32 @@ public static class GpuLoad
                     "root\\CIMV2",
                     "SELECT Name, UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine");
 
-                double total = 0;
+                double peak = 0;
                 foreach (System.Management.ManagementBaseObject item in searcher.Get())
                 {
-                    string? name = item["Name"] as string;
-                    if (name is null || !name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase)) continue;
+                    using (item)
+                    {
+                        string? name = item["Name"] as string;
+                        if (name is null || !name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase)) continue;
 
-                    object? value = item["UtilizationPercentage"];
-                    if (value is null) continue;
+                        object? value = item["UtilizationPercentage"];
+                        if (value is null) continue;
 
-                    total += Convert.ToDouble(value);
+                        double current = Convert.ToDouble(value);
+                        if (current > peak) peak = current;
+                    }
                 }
 
-                _cached = Math.Clamp(total, 0, 100);
+                _cached = Math.Clamp(peak, 0, 100);
                 _lastQueryMs = MonoClock.NowMs;
                 percent = _cached;
                 return true;
             }
             catch (Exception ex)
             {
-                _unavailable = true;
-                Log.Warn($"GPU load unavailable, condition disabled: {ex.Message}");
+                _cached = 0;
+                _lastQueryMs = MonoClock.NowMs;
+                Log.Warn($"GPU load read failed, will retry: {ex.Message}");
                 return false;
             }
         }
@@ -300,19 +315,21 @@ public static class IdleTime
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetLastInputInfo(ref LastInputInfo info);
 
-    public static int Minutes()
+    public static bool TryMinutes(out int minutes)
     {
+        minutes = 0;
         try
         {
             var info = new LastInputInfo { CbSize = (uint)Marshal.SizeOf<LastInputInfo>() };
-            if (!GetLastInputInfo(ref info)) return 0;
+            if (!GetLastInputInfo(ref info)) return false;
 
             uint idleMs = unchecked((uint)Environment.TickCount - info.DwTime);
-            return (int)(idleMs / 60000);
+            minutes = (int)(idleMs / 60000);
+            return true;
         }
         catch
         {
-            return 0;
+            return false;
         }
     }
 }
@@ -367,8 +384,14 @@ public static class ForegroundWindow
             if (width <= 0 || height <= 0) return false;
 
             // 覆盖整个屏幕（含任务栏区域）才判定为全屏独占。
-            int screenWidth = GetSystemMetrics(0);
-            int screenHeight = GetSystemMetrics(1);
+            IntPtr monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+            if (monitor == IntPtr.Zero) return false;
+
+            var info = new MonitorInfo { cbSize = (uint)Marshal.SizeOf<MonitorInfo>() };
+            if (!GetMonitorInfo(monitor, ref info)) return false;
+
+            int screenWidth = info.rcMonitor.Right - info.rcMonitor.Left;
+            int screenHeight = info.rcMonitor.Bottom - info.rcMonitor.Top;
 
             return width >= screenWidth && height >= screenHeight;
         }
@@ -378,6 +401,21 @@ public static class ForegroundWindow
         }
     }
 
+    private const uint MonitorDefaultToNearest = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public uint cbSize;
+        public Rect rcMonitor;
+        public Rect rcWork;
+        public uint dwFlags;
+    }
+
     [DllImport("user32.dll")]
-    private static extern int GetSystemMetrics(int index);
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo info);
 }

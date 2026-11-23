@@ -140,13 +140,7 @@ internal static class NativeDdc
         _ => $"error-{code:X8}",
     };
 
-    internal static bool IsTransient(int code) => code is
-        ERROR_GRAPHICS_I2C_ERROR_TRANSMITTING_DATA or
-        ERROR_GRAPHICS_I2C_ERROR_RECEIVING_DATA or
-        ERROR_GRAPHICS_DDCCI_MONITOR_RETURNED_INVALID_TIMING_STATUS_BYTE or
-        ERROR_GRAPHICS_DDCCI_INVALID_MESSAGE_COMMAND or
-        ERROR_GRAPHICS_DDCCI_INVALID_MESSAGE_LENGTH or
-        ERROR_GRAPHICS_DDCCI_INVALID_MESSAGE_CHECKSUM;
+    internal static bool IsTransient(int code) => DdcErrorClassifier.IsTransient(DdcErrorClassifier.Classify(code));
 
     internal static string ToUtf8(byte[] buffer)
     {

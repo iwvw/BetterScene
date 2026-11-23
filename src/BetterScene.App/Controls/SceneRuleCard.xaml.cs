@@ -112,5 +112,5 @@ public sealed partial class SceneRuleCard : UserControl
 
     private void OnDeleteClick(object sender, RoutedEventArgs e) => DeleteRequested?.Invoke(this);
 
-    public SceneRule Rule => _item!.Rule;
+    public SceneRule Rule => _item?.Rule ?? new SceneRule();
 }

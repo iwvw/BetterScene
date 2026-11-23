@@ -5,37 +5,73 @@ namespace BetterScene.Core.Displays;
 
 internal sealed class DdcSession : IDisposable
 {
+    private readonly object _sync = new();
     private readonly Dictionary<string, IntPtr> _handles = new(StringComparer.OrdinalIgnoreCase);
 
-    public IReadOnlyDictionary<string, IntPtr> Handles => _handles;
+    public IReadOnlyDictionary<string, IntPtr> Handles
+    {
+        get
+        {
+            lock (_sync) return new Dictionary<string, IntPtr>(_handles, StringComparer.OrdinalIgnoreCase);
+        }
+    }
 
-    public bool TryGet(string id, out IntPtr handle) => _handles.TryGetValue(id, out handle);
+    public bool TryGet(string id, out IntPtr handle)
+    {
+        lock (_sync) return _handles.TryGetValue(id, out handle);
+    }
 
-    public void Adopt(string id, IntPtr handle) => _handles[id] = handle;
+    public void Adopt(string id, IntPtr handle)
+    {
+        IntPtr replaced = IntPtr.Zero;
+        lock (_sync)
+        {
+            if (_handles.TryGetValue(id, out IntPtr existing)) replaced = existing;
+            _handles[id] = handle;
+        }
+
+        if (replaced != IntPtr.Zero && replaced != handle) NativeDdc.DestroyPhysicalMonitor(replaced);
+    }
 
     public void Release(string id)
     {
-        if (_handles.Remove(id, out IntPtr handle) && handle != IntPtr.Zero)
+        IntPtr handle = IntPtr.Zero;
+        lock (_sync)
         {
-            NativeDdc.DestroyPhysicalMonitor(handle);
+            if (_handles.Remove(id, out IntPtr removed)) handle = removed;
         }
+
+        if (handle != IntPtr.Zero) NativeDdc.DestroyPhysicalMonitor(handle);
     }
 
     public void ReleaseAllExcept(HashSet<string> keep)
     {
-        foreach (string id in _handles.Keys.ToArray())
+        var dead = new List<IntPtr>();
+        lock (_sync)
         {
-            if (!keep.Contains(id)) Release(id);
+            foreach (string id in _handles.Keys.ToArray())
+            {
+                if (keep.Contains(id)) continue;
+                if (_handles.Remove(id, out IntPtr handle) && handle != IntPtr.Zero) dead.Add(handle);
+            }
         }
+
+        foreach (IntPtr handle in dead) NativeDdc.DestroyPhysicalMonitor(handle);
     }
 
     public void Dispose()
     {
-        foreach (IntPtr handle in _handles.Values)
+        var all = new List<IntPtr>();
+        lock (_sync)
+        {
+            all.AddRange(_handles.Values);
+            _handles.Clear();
+        }
+
+        foreach (IntPtr handle in all)
         {
             if (handle != IntPtr.Zero) NativeDdc.DestroyPhysicalMonitor(handle);
         }
-        _handles.Clear();
     }
 }
 
@@ -163,7 +199,23 @@ internal static class DdcOperations
 
         int open = capabilities.IndexOf('(', start);
         if (open < 0) return codes;
-        int close = capabilities.LastIndexOf(')');
+
+        // 用括号配对找到 vcp(...) 组自己的右括号,而不是整串最后一个 ')'。
+        // 否则 "vcp(...)mccs_ver(2.2)" 里的 "cc"(mccs)等尾随文本会被
+        // 当作十六进制码混进来,凭空多出并不存在的能力项。
+        int close = -1;
+        int outerDepth = 0;
+        for (int i = open; i < capabilities.Length; i++)
+        {
+            char c = capabilities[i];
+            if (c == '(') outerDepth++;
+            else if (c == ')')
+            {
+                outerDepth--;
+                if (outerDepth == 0) { close = i; break; }
+            }
+        }
+
         if (close <= open) return codes;
 
         string body = capabilities[(open + 1)..close].Replace("\0", string.Empty).Replace(" ", string.Empty);
@@ -225,9 +277,12 @@ internal static class DdcOperations
     /// </summary>
     public static byte DetermineBrightnessVcp(DdcSession session, DisplayTarget target, string capabilities, WorkerSettings settings)
     {
-        byte forced = MonitorRules.Resolve(settings, target.FirmwareId);
-        if (MonitorRules.BrightnessVcpCodes.ContainsKey(target.FirmwareId)) return forced;
-        if (settings.BrightnessVcpOverrides.ContainsKey(target.FirmwareId)) return forced;
+        // 固件规则表或用户显式覆盖一旦命中就直接采用,不再进入自动探测。
+        if (MonitorRules.BrightnessVcpCodes.ContainsKey(target.FirmwareId) ||
+            settings.BrightnessVcpOverrides.ContainsKey(target.FirmwareId))
+        {
+            return MonitorRules.Resolve(settings, target.FirmwareId);
+        }
 
         HashSet<byte>? reported = capabilities.Length == 0 ? null : ParseCapabilityCodes(capabilities);
         if (!session.TryGet(target.Id, out IntPtr handle)) return 0x10;
