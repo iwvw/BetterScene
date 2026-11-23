@@ -138,10 +138,8 @@ public sealed class DisplayService : IDisposable
 
             _client = client;
             _writer = new StreamWriter(client, new UTF8Encoding(false)) { AutoFlush = true };
+            _intervalSent = false;
             Log.Info("displays pipe connected");
-
-            // 连接建立前设置的刷新间隔会被 Send 丢弃,这里补发一次。
-            if (_pendingIntervalMs is { } interval) Send(new { type = "set-interval", value = interval });
 
             using var reader = new StreamReader(client, Encoding.UTF8);
             while (!_disposed)
@@ -210,10 +208,12 @@ public sealed class DisplayService : IDisposable
     public void SetInterval(int value)
     {
         _pendingIntervalMs = value;
+        _intervalSent = false;
         Send(new { type = "set-interval", value });
     }
 
     private int? _pendingIntervalMs;
+    private bool _intervalSent;
 
     private void Send(object payload)
     {
@@ -224,6 +224,15 @@ public sealed class DisplayService : IDisposable
         {
             lock (_gate)
             {
+                // 连接建立前设置过的刷新间隔:借第一条真正要发的消息捎带补发一次。
+                // 绝不能在「连接成功」或「收到首条消息」时单独写——那时 worker 可能还没
+                // 进入读取循环,双方会同时阻塞在各自的写操作上,形成死锁。
+                if (!_intervalSent && _pendingIntervalMs is { } interval)
+                {
+                    _intervalSent = true;
+                    writer.WriteLine(JsonSerializer.Serialize(new { type = "set-interval", value = interval }, Json));
+                }
+
                 writer.WriteLine(JsonSerializer.Serialize(payload, Json));
             }
         }
