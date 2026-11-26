@@ -53,6 +53,58 @@ public static class HdrControl
             return HdrState.Unknown;
         }
 
+        // Windows 11 24H2(26100)起,HDR 与宽色域(WCG / ACM)是两套彼此独立的状态。
+        // 旧 API 分不清二者:只要自动颜色管理(ACM)打开,它就报 advancedColorEnabled=1
+        // 且 wideColorEnforced=1,于是被误读成「HDR 已开启且被锁死」。新 API 直接给出
+        // highDynamicRangeUserEnabled,能正确区分 HDR 与 WCG。
+        if (TryGetAdvancedColorInfo2(adapterId, targetId, out HdrState modern))
+        {
+            return modern;
+        }
+
+        return ReadAdvancedColorInfoLegacy(adapterId, targetId);
+    }
+
+    /// <summary>
+    /// 新版(GET_ADVANCED_COLOR_INFO_2)读取。仅 Windows 11 24H2 及以上可用,
+    /// 旧系统调用会失败并返回 false,由调用方回退到旧接口。
+    /// </summary>
+    private static bool TryGetAdvancedColorInfo2(Luid adapterId, uint targetId, out HdrState state)
+    {
+        state = HdrState.Unknown;
+
+        var info = new DisplayConfigGetAdvancedColorInfo2
+        {
+            header = new DisplayConfigDeviceInfoHeader
+            {
+                type = DisplayConfigDeviceInfoType.GetAdvancedColorInfo2,
+                size = (uint)Marshal.SizeOf<DisplayConfigGetAdvancedColorInfo2>(),
+                adapterId = adapterId,
+                id = targetId,
+            },
+        };
+
+        if (DisplayConfigGetDeviceInfo(ref info) != ErrorSuccess)
+        {
+            return false;
+        }
+
+        // 该结构没有「宽色域强制」这一概念:WCG 由 wideColor* 位单独表达,与 HDR 开关互不影响。
+        // 因此这里恒置 WideColorEnforced=false,不再因 ACM 打开而锁死 HDR 开关。
+        uint value = info.value;
+
+        state = new HdrState(
+            IsSupported: (value & 0x10) != 0,
+            IsEnabled: (value & 0x20) != 0,
+            WideColorEnforced: false,
+            ForceDisabled: (value & 0x8) != 0,
+            BitsPerColorChannel: (int)info.bitsPerColorChannel,
+            ColorEncoding: EncodeColor(info.colorEncoding));
+        return true;
+    }
+
+    private static HdrState ReadAdvancedColorInfoLegacy(Luid adapterId, uint targetId)
+    {
         var info = new DisplayConfigGetAdvancedColorInfo
         {
             header = new DisplayConfigDeviceInfoHeader
@@ -77,16 +129,18 @@ public static class HdrControl
             WideColorEnforced: (value & 0x4) != 0,
             ForceDisabled: (value & 0x8) != 0,
             BitsPerColorChannel: (int)info.bitsPerColorChannel,
-            ColorEncoding: info.colorEncoding switch
-            {
-                0 => "RGB",
-                1 => "YCbCr444",
-                2 => "YCbCr422",
-                3 => "YCbCr420",
-                4 => "Intensity",
-                _ => $"0x{info.colorEncoding:X}",
-            });
+            ColorEncoding: EncodeColor(info.colorEncoding));
     }
+
+    private static string EncodeColor(uint encoding) => encoding switch
+    {
+        0 => "RGB",
+        1 => "YCbCr444",
+        2 => "YCbCr422",
+        3 => "YCbCr420",
+        4 => "Intensity",
+        _ => $"0x{encoding:X}",
+    };
 
     /// <summary>
     /// 开关 HDR。返回 true 表示系统接受了请求。
@@ -102,6 +156,41 @@ public static class HdrControl
             return false;
         }
 
+        // 24H2 起用 SET_HDR_STATE,它只切 HDR,不会连带动到 WCG / ACM;
+        // 旧系统用 SET_ADVANCED_COLOR_STATE。
+        int hr = TryGetAdvancedColorInfo2(adapterId, targetId, out _)
+            ? SetHdrState(adapterId, targetId, enabled)
+            : SetAdvancedColorState(adapterId, targetId, enabled);
+
+        if (hr != ErrorSuccess)
+        {
+            Log.Warn($"hdr: set enabled={enabled} failed for {target.Id} hr=0x{hr:X8}");
+            return false;
+        }
+
+        Log.Info($"hdr: requested enabled={enabled} for {target.Id}");
+        return true;
+    }
+
+    private static int SetHdrState(Luid adapterId, uint targetId, bool enabled)
+    {
+        var state = new DisplayConfigSetHdrState
+        {
+            header = new DisplayConfigDeviceInfoHeader
+            {
+                type = DisplayConfigDeviceInfoType.SetHdrState,
+                size = (uint)Marshal.SizeOf<DisplayConfigSetHdrState>(),
+                adapterId = adapterId,
+                id = targetId,
+            },
+            value = enabled ? 1u : 0u,
+        };
+
+        return DisplayConfigSetDeviceInfo(ref state);
+    }
+
+    private static int SetAdvancedColorState(Luid adapterId, uint targetId, bool enabled)
+    {
         var state = new DisplayConfigSetAdvancedColorState
         {
             header = new DisplayConfigDeviceInfoHeader
@@ -114,15 +203,7 @@ public static class HdrControl
             value = enabled ? 1u : 0u,
         };
 
-        int hr = DisplayConfigSetDeviceInfo(ref state);
-        if (hr != ErrorSuccess)
-        {
-            Log.Warn($"hdr: set enabled={enabled} failed for {target.Id} hr=0x{hr:X8}");
-            return false;
-        }
-
-        Log.Info($"hdr: requested enabled={enabled} for {target.Id}");
-        return true;
+        return DisplayConfigSetDeviceInfo(ref state);
     }
 
     /// <summary>
@@ -242,6 +323,10 @@ public static class HdrControl
         GetAdvancedColorInfo = 9,
         SetAdvancedColorState = 10,
 
+        // Windows 11 24H2(26100)新增:HDR 与 WCG 拆分后的接口。
+        GetAdvancedColorInfo2 = 15,
+        SetHdrState = 16,
+
         // SDR 白点是正整数类型（不是负数编码）。
         // 只有 GET/SET_DPI_SCALE 那对才是负数。
         GetSdrWhiteLevel = 11,
@@ -334,6 +419,31 @@ public static class HdrControl
         public uint value;
     }
 
+    /// <summary>
+    /// 必须是 36 字节:header(20) + value(4) + colorEncoding(4) + bitsPerColorChannel(4)
+    /// + activeColorMode(4)。value 的位定义与旧结构不同:
+    /// 0=advancedColorSupported,1=advancedColorActive,3=advancedColorLimitedByPolicy,
+    /// 4=highDynamicRangeSupported,5=highDynamicRangeUserEnabled,
+    /// 6=wideColorSupported,7=wideColorUserEnabled。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DisplayConfigGetAdvancedColorInfo2
+    {
+        public DisplayConfigDeviceInfoHeader header;
+        public uint value;
+        public uint colorEncoding;
+        public uint bitsPerColorChannel;
+        public uint activeColorMode;
+    }
+
+    /// <summary>header(20) + value(4) = 24 字节。只写:bit0 = enableHdr。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DisplayConfigSetHdrState
+    {
+        public DisplayConfigDeviceInfoHeader header;
+        public uint value;
+    }
+
     /// <summary>header(20) + sdrWhiteLevel(4) = 24 字节。只读。</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct DisplayConfigGetSdrWhiteLevel
@@ -367,10 +477,16 @@ public static class HdrControl
     private static extern int DisplayConfigGetDeviceInfo(ref DisplayConfigGetAdvancedColorInfo requestPacket);
 
     [DllImport("user32.dll")]
+    private static extern int DisplayConfigGetDeviceInfo(ref DisplayConfigGetAdvancedColorInfo2 requestPacket);
+
+    [DllImport("user32.dll")]
     private static extern int DisplayConfigGetDeviceInfo(ref DisplayConfigSourceDeviceName requestPacket);
 
     [DllImport("user32.dll")]
     private static extern int DisplayConfigSetDeviceInfo(ref DisplayConfigSetAdvancedColorState requestPacket);
+
+    [DllImport("user32.dll")]
+    private static extern int DisplayConfigSetDeviceInfo(ref DisplayConfigSetHdrState requestPacket);
 
     [DllImport("user32.dll", EntryPoint = "DisplayConfigGetDeviceInfo")]
     private static extern int DisplayConfigGetDeviceInfoSdrWhite(ref DisplayConfigGetSdrWhiteLevel requestPacket);
